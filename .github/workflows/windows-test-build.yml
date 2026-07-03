@@ -37,17 +37,8 @@ jobs:
           workspaces: "./ -> target"
           shared-key: issue2444-windows-x64
 
-      - name: Build frontend
-        run: pnpm build
-
-      - name: Build Windows executable
-        run: cargo build --package dbx --release --target x86_64-pc-windows-msvc
-
-      - name: Build Windows NSIS installer
-        run: pnpm tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --ci --no-sign
-
       - name: Build Windows WebView2 offline NSIS installer
-        run: pnpm tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.webview2-offline.conf.json --ci --no-sign
+        run: pnpm tauri build --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.webview2-offline.conf.json --ci --no-sign
 
       - name: Collect installers
         shell: pwsh
