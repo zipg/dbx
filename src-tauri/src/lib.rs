@@ -240,9 +240,18 @@ fn apply_linux_webkit_rendering_workarounds() {
 
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        log::info!("[window] showing main window");
+        if let Err(err) = window.show() {
+            log::error!("[window] show main window failed: {err}");
+        }
+        if let Err(err) = window.unminimize() {
+            log::warn!("[window] unminimize main window failed: {err}");
+        }
+        if let Err(err) = window.set_focus() {
+            log::warn!("[window] focus main window failed: {err}");
+        }
+    } else {
+        log::error!("[window] main webview window is missing");
     }
 }
 
@@ -735,6 +744,7 @@ pub fn run() {
             commands::app_settings::load_pinned_tree_node_ids,
             commands::app_settings::save_pinned_tree_node_ids,
             commands::app_settings::load_native_debug_logs,
+            commands::app_settings::get_webview_diagnostics,
             commands::cloud_sync::webdav_sync_test,
             commands::cloud_sync::webdav_password_status,
             commands::cloud_sync::save_webdav_saved_password,

@@ -155,6 +155,24 @@ const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   sidebar_table_page_size: 1000,
 };
 
+export interface Webview2RegistryEntry {
+  hive: string;
+  view: string;
+  version: string;
+}
+
+export interface WebviewDiagnostics {
+  platform: string;
+  arch: string;
+  webview2_runtime_installed: boolean;
+  webview2_runtime_version: string | null;
+  webview2_registry_entries: Webview2RegistryEntry[];
+  webview2_browser_executable_folder: string | null;
+  webview2_user_data_folder: string | null;
+  processor_architecture: string | null;
+  processor_architew6432: string | null;
+}
+
 async function post<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(apiUrl(url), {
     method: "POST",
@@ -1016,6 +1034,20 @@ export async function loadDesktopSettings(): Promise<DesktopSettings> {
   } catch {
     return { ...DEFAULT_DESKTOP_SETTINGS };
   }
+}
+
+export async function getWebviewDiagnostics(): Promise<WebviewDiagnostics> {
+  return {
+    platform: navigator.platform || "web",
+    arch: "",
+    webview2_runtime_installed: false,
+    webview2_runtime_version: null,
+    webview2_registry_entries: [],
+    webview2_browser_executable_folder: null,
+    webview2_user_data_folder: null,
+    processor_architecture: null,
+    processor_architew6432: null,
+  };
 }
 
 export async function saveDesktopSettings(settings: DesktopSettings): Promise<void> {

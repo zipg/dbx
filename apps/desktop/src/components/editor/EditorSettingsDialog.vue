@@ -59,10 +59,12 @@ import {
   webdavSyncDownload,
   webdavSyncTest,
   webdavSyncUpload,
+  getWebviewDiagnostics,
   type AiModelInfo,
   type McpServerStatus,
   type WebDavConfig,
 } from "@/lib/api";
+import type { WebviewDiagnostics } from "@/lib/tauri";
 import { eventToShortcut } from "@/lib/keyboardShortcuts";
 import { SHORTCUT_DEFINITIONS, findShortcutConflict, normalizeShortcutSettings, type ShortcutActionId } from "@/lib/shortcutRegistry";
 import { normalizeSidebarHiddenTablePrefixes } from "@/lib/sidebarTableNameDisplay";
@@ -226,6 +228,9 @@ const editDebugLoggingEnabled = ref(settingsStore.desktopSettings.debug_logging_
 const editSidebarTablePageSize = ref(settingsStore.desktopSettings.sidebar_table_page_size ?? DEFAULT_SIDEBAR_TABLE_PAGE_SIZE);
 const debugLogCopied = ref(false);
 const debugLogDownloaded = ref(false);
+const webviewDiagnostics = ref<WebviewDiagnostics | null>(null);
+const webviewDiagnosticsLoading = ref(false);
+const webviewDiagnosticsError = ref("");
 const editShowColumnCommentsInHeader = ref(settingsStore.editorSettings.showColumnCommentsInHeader);
 const editShowColumnTypesInHeader = ref(settingsStore.editorSettings.showColumnTypesInHeader);
 const editCompactColumnHeaderActions = ref(settingsStore.editorSettings.compactColumnHeaderActions);
@@ -1090,6 +1095,8 @@ function setSidebarActivation(value: "single" | "double") {
 
 const activeSettingsTab = ref("editor");
 const isWeb = !isTauriRuntime();
+const browserPlatform = navigator.platform || "";
+const browserUserAgent = navigator.userAgent;
 const displayedAppVersion = computed(() => (props.appVersion ? `v${props.appVersion}` : ""));
 type SettingsCategory = "editor" | "formatter" | "appearance" | "navigation" | "data" | "shortcuts" | "snippets" | "sync" | "ai" | "mcp" | "security" | "about";
 const settingsCategoryNav = computed<{ value: SettingsCategory; label: string }[]>(() => [
@@ -1121,6 +1128,37 @@ function openExternalUrl(url: string) {
     import("@tauri-apps/plugin-shell").then(({ open }) => open(url));
   } else {
     window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
+const webviewUserAgentVersion = computed(() => webviewVersionFromUserAgent(browserUserAgent));
+const webviewRuntimeVersion = computed(() => webviewDiagnostics.value?.webview2_runtime_version || webviewUserAgentVersion.value || "");
+const webviewRuntimeStatusLabel = computed(() => {
+  if (webviewDiagnosticsLoading.value) return t("settings.webviewDiagnosticsLoading");
+  if (webviewDiagnosticsError.value) return t("settings.webviewDiagnosticsFailed");
+  if (webviewRuntimeVersion.value) return `WebView ${webviewRuntimeVersion.value}`;
+  return t("settings.webviewVersionUnknown");
+});
+const webviewRegistryEntriesText = computed(() => {
+  const entries = webviewDiagnostics.value?.webview2_registry_entries ?? [];
+  if (!entries.length) return t("settings.webviewRegistryMissing");
+  return entries.map((entry) => `${entry.hive}/${entry.view}: ${entry.version}`).join("\n");
+});
+
+function webviewVersionFromUserAgent(userAgent: string): string {
+  return userAgent.match(/\bEdg\/([0-9.]+)/)?.[1] || userAgent.match(/\bChrome\/([0-9.]+)/)?.[1] || "";
+}
+
+async function refreshWebviewDiagnostics() {
+  if (isWeb || webviewDiagnosticsLoading.value) return;
+  webviewDiagnosticsLoading.value = true;
+  webviewDiagnosticsError.value = "";
+  try {
+    webviewDiagnostics.value = await getWebviewDiagnostics();
+  } catch (error: any) {
+    webviewDiagnosticsError.value = error?.message || String(error);
+  } finally {
+    webviewDiagnosticsLoading.value = false;
   }
 }
 
@@ -1459,6 +1497,7 @@ watch([webdavAutoUploadEnabled, webdavAutoUploadIntervalMinutes], () => {
 watch(activeSettingsTab, (tab) => {
   if (tab === "mcp" && !mcpStatus.value && !mcpStatusLoading.value) void refreshMcpStatus();
   if (tab === "ai" && aiIsCodexCli.value) void ensureCodexMcpStatus();
+  if (tab === "about" && !webviewDiagnostics.value && !webviewDiagnosticsLoading.value) void refreshWebviewDiagnostics();
   if (tab === "appearance") {
     checkLayoutDescTruncation();
     checkIconThemeDescTruncation();
@@ -3642,6 +3681,47 @@ onUnmounted(cleanupPreviewEditor);
                   </div>
                   <div v-if="displayedAppVersion" class="rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground">
                     {{ displayedAppVersion }}
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="!isWeb" class="rounded-lg border p-4">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div class="min-w-0 space-y-1">
+                    <div class="flex items-center gap-2">
+                      <Terminal class="h-4 w-4 text-muted-foreground" />
+                      <Label>{{ t("settings.webviewDiagnosticsTitle") }}</Label>
+                      <Badge variant="outline" class="h-5 max-w-full rounded-md px-1.5 text-[11px] font-normal">
+                        <span class="truncate">{{ webviewRuntimeStatusLabel }}</span>
+                      </Badge>
+                    </div>
+                    <p class="text-sm text-muted-foreground">{{ t("settings.webviewDiagnosticsDescription") }}</p>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" class="h-8 shrink-0" :disabled="webviewDiagnosticsLoading" @click="refreshWebviewDiagnostics">
+                    <Loader2 v-if="webviewDiagnosticsLoading" class="mr-1 h-3.5 w-3.5 animate-spin" />
+                    <RefreshCw v-else class="mr-1 h-3.5 w-3.5" />
+                    {{ t("settings.webviewDiagnosticsRefresh") }}
+                  </Button>
+                </div>
+                <div class="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                  <div class="rounded-md bg-muted/30 px-3 py-2">
+                    <div class="text-muted-foreground">{{ t("settings.webviewVersion") }}</div>
+                    <div class="mt-1 select-text font-mono">{{ webviewRuntimeVersion || t("settings.webviewVersionUnknown") }}</div>
+                  </div>
+                  <div class="rounded-md bg-muted/30 px-3 py-2">
+                    <div class="text-muted-foreground">{{ t("settings.webviewPlatform") }}</div>
+                    <div class="mt-1 select-text font-mono">{{ webviewDiagnostics?.platform || browserPlatform || "-" }} {{ webviewDiagnostics?.arch || "" }}</div>
+                  </div>
+                  <div class="rounded-md bg-muted/30 px-3 py-2 sm:col-span-2">
+                    <div class="text-muted-foreground">{{ t("settings.webviewRegistry") }}</div>
+                    <pre class="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">{{ webviewRegistryEntriesText }}</pre>
+                  </div>
+                  <div class="rounded-md bg-muted/30 px-3 py-2 sm:col-span-2">
+                    <div class="text-muted-foreground">{{ t("settings.webviewUserAgent") }}</div>
+                    <div class="mt-1 select-text break-all font-mono text-[11px] leading-relaxed">{{ browserUserAgent }}</div>
+                  </div>
+                  <div v-if="webviewDiagnosticsError" class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive sm:col-span-2">
+                    {{ webviewDiagnosticsError }}
                   </div>
                 </div>
               </div>

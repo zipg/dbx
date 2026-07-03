@@ -111,7 +111,15 @@ export function clearDebugLogs() {
 
 export function getDebugLogText(): string {
   const entries = readEntries();
-  const header = [`DBX debug log`, `Exported: ${new Date().toISOString()}`, `User agent: ${navigator.userAgent}`, `Platform: ${navigator.platform}`, `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown"}`, ""];
+  const header = [
+    `DBX debug log`,
+    `Exported: ${new Date().toISOString()}`,
+    `User agent: ${navigator.userAgent}`,
+    `Platform: ${navigator.platform}`,
+    `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown"}`,
+    `WebView version: ${webviewVersionFromUserAgent(navigator.userAgent) || "unknown"}`,
+    "",
+  ];
   const body = entries.map((entry) => `[${entry.timestamp}] [${entry.level.toUpperCase()}] ${entry.message}`);
   return [...header, ...body].join("\n");
 }
@@ -142,6 +150,10 @@ export async function downloadDebugLogs() {
 
 export async function getDebugLogBundleText(): Promise<string> {
   const sections = [getDebugLogText()];
+  const webviewDiagnostics = await loadWebviewDiagnostics().catch((error) => `Failed to load WebView diagnostics: ${formatValue(error)}`);
+  if (webviewDiagnostics) {
+    sections.push(["", "===== WebView diagnostics =====", webviewDiagnostics].join("\n"));
+  }
   const nativeLogs = await loadNativeDebugLogs().catch((error) => `Failed to load native logs: ${formatValue(error)}`);
   if (nativeLogs) {
     sections.push(["", "===== Native / Tauri logs =====", nativeLogs].join("\n"));
@@ -153,6 +165,27 @@ async function loadNativeDebugLogs(): Promise<string> {
   if (!isTauriRuntimeLike()) return "";
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("load_native_debug_logs");
+}
+
+async function loadWebviewDiagnostics(): Promise<string> {
+  if (!isTauriRuntimeLike()) return "";
+  const { invoke } = await import("@tauri-apps/api/core");
+  const diagnostics = await invoke<Record<string, unknown>>("get_webview_diagnostics");
+  return JSON.stringify(
+    {
+      userAgent: navigator.userAgent,
+      webviewVersionFromUserAgent: webviewVersionFromUserAgent(navigator.userAgent) || null,
+      platform: navigator.platform,
+      language: navigator.language,
+      ...diagnostics,
+    },
+    null,
+    2,
+  );
+}
+
+function webviewVersionFromUserAgent(userAgent: string): string | null {
+  return userAgent.match(/\bEdg\/([0-9.]+)/)?.[1] || userAgent.match(/\bChrome\/([0-9.]+)/)?.[1] || null;
 }
 
 function isTauriRuntimeLike(): boolean {

@@ -93,6 +93,24 @@ export interface JavaRuntimeConfig {
   custom_java_path: string | null;
 }
 
+export interface Webview2RegistryEntry {
+  hive: string;
+  view: string;
+  version: string;
+}
+
+export interface WebviewDiagnostics {
+  platform: string;
+  arch: string;
+  webview2_runtime_installed: boolean;
+  webview2_runtime_version: string | null;
+  webview2_registry_entries: Webview2RegistryEntry[];
+  webview2_browser_executable_folder: string | null;
+  webview2_user_data_folder: string | null;
+  processor_architecture: string | null;
+  processor_architew6432: string | null;
+}
+
 export interface DriverStoreUsageItem {
   id: string;
   bytes: number;
@@ -364,6 +382,10 @@ export async function loadAiConfig(): Promise<AiConfig | null> {
 
 export async function loadDesktopSettings(): Promise<DesktopSettings> {
   return invoke("load_desktop_settings");
+}
+
+export async function getWebviewDiagnostics(): Promise<WebviewDiagnostics> {
+  return invoke("get_webview_diagnostics");
 }
 
 export async function saveDesktopSettings(settings: DesktopSettings): Promise<void> {

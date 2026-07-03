@@ -210,6 +210,7 @@ export const loadAiConfig = forward("loadAiConfig");
 export const saveAiProviderConfig = forward("saveAiProviderConfig");
 export const loadAiProviderConfigs = forward("loadAiProviderConfigs");
 export const loadDesktopSettings = forward("loadDesktopSettings");
+export const getWebviewDiagnostics = forward("getWebviewDiagnostics");
 export const saveDesktopSettings = forward("saveDesktopSettings");
 export const completeAppClose = forward("completeAppClose");
 export const requestAppClose = forward("requestAppClose");

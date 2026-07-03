@@ -83,6 +83,31 @@ pub async fn load_native_debug_logs(app: AppHandle) -> Result<String, String> {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct WebviewDiagnostics {
+    pub platform: String,
+    pub arch: String,
+    pub webview2_runtime_installed: bool,
+    pub webview2_runtime_version: Option<String>,
+    pub webview2_registry_entries: Vec<Webview2RegistryEntry>,
+    pub webview2_browser_executable_folder: Option<String>,
+    pub webview2_user_data_folder: Option<String>,
+    pub processor_architecture: Option<String>,
+    pub processor_architew6432: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Webview2RegistryEntry {
+    pub hive: String,
+    pub view: String,
+    pub version: String,
+}
+
+#[tauri::command]
+pub async fn get_webview_diagnostics() -> Result<WebviewDiagnostics, String> {
+    tauri::async_runtime::spawn_blocking(load_webview_diagnostics).await.map_err(|err| err.to_string())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DriverStorePathInfo {
     pub driver_store_dir: Option<String>,
     pub plugin_store_dir: Option<String>,
@@ -375,6 +400,97 @@ fn count_files_recursive(dir: &std::path::Path) -> Result<DirStats, String> {
     }
     walk(dir, &mut count, &mut total_size)?;
     Ok(DirStats { count, total_size })
+}
+
+fn load_webview_diagnostics() -> WebviewDiagnostics {
+    let entries = webview2_registry_entries();
+    let webview2_runtime_version = entries.iter().map(|entry| entry.version.clone()).max();
+    WebviewDiagnostics {
+        platform: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        webview2_runtime_installed: !entries.is_empty(),
+        webview2_runtime_version,
+        webview2_registry_entries: entries,
+        webview2_browser_executable_folder: env_value("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"),
+        webview2_user_data_folder: env_value("WEBVIEW2_USER_DATA_FOLDER"),
+        processor_architecture: env_value("PROCESSOR_ARCHITECTURE"),
+        processor_architew6432: env_value("PROCESSOR_ARCHITEW6432"),
+    }
+}
+
+fn env_value(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|value| !value.trim().is_empty())
+}
+
+#[cfg(target_os = "windows")]
+fn webview2_registry_entries() -> Vec<Webview2RegistryEntry> {
+    const WEBVIEW2_CLIENT_KEY: &str = r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+    let queries = [
+        ("HKCU", "default", format!(r"HKCU\{WEBVIEW2_CLIENT_KEY}")),
+        ("HKLM", "64", format!(r"HKLM\{WEBVIEW2_CLIENT_KEY}")),
+        ("HKLM", "32", format!(r"HKLM\{WEBVIEW2_CLIENT_KEY}")),
+        (
+            "HKLM",
+            "wow6432",
+            format!(r"HKLM\Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}}"),
+        ),
+    ];
+
+    let mut entries = Vec::new();
+    for (hive, view, key) in queries {
+        if let Some(version) = query_webview2_runtime_version(&key, view) {
+            if !entries.iter().any(|entry: &Webview2RegistryEntry| {
+                entry.hive == hive && entry.view == view && entry.version == version
+            }) {
+                entries.push(Webview2RegistryEntry { hive: hive.to_string(), view: view.to_string(), version });
+            }
+        }
+    }
+    entries
+}
+
+#[cfg(not(target_os = "windows"))]
+fn webview2_registry_entries() -> Vec<Webview2RegistryEntry> {
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+fn query_webview2_runtime_version(key: &str, view: &str) -> Option<String> {
+    let mut command = std::process::Command::new("reg");
+    command.args(["query", key, "/v", "pv"]);
+    match view {
+        "32" => {
+            command.arg("/reg:32");
+        }
+        "64" => {
+            command.arg("/reg:64");
+        }
+        _ => {}
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_reg_pv_value(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(target_os = "windows")]
+fn parse_reg_pv_value(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("pv") {
+            return None;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let name = parts.next()?;
+        let value_type = parts.next()?;
+        if name.eq_ignore_ascii_case("pv") && value_type.eq_ignore_ascii_case("REG_SZ") {
+            let value = parts.collect::<Vec<_>>().join(" ");
+            (!value.trim().is_empty()).then(|| value)
+        } else {
+            None
+        }
+    })
 }
 
 fn load_native_debug_logs_from_dir(log_dir: PathBuf) -> Result<String, String> {

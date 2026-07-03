@@ -1,0 +1,56 @@
+name: Windows Test Build
+
+on:
+  push:
+    branches:
+      - codex/issue2444-webview-diagnostics
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows NSIS installer
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci --no-sign
+
+      - name: Build Windows WebView2 offline NSIS installer
+        run: pnpm tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.webview2-offline.conf.json --ci --no-sign
+
+      - name: Collect installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter "*.exe" |
+            Sort-Object LastWriteTimeUtc |
+            ForEach-Object {
+              Copy-Item $_.FullName (Join-Path artifacts $_.Name) -Force
+            }
+          Get-ChildItem artifacts
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbx-issue2444-windows-x64-installers
+          path: artifacts/*.exe
+          if-no-files-found: error
