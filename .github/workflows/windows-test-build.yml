@@ -31,8 +31,20 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+          shared-key: issue2444-windows-x64
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Windows executable
+        run: cargo build --package dbx --release --target x86_64-pc-windows-msvc
+
       - name: Build Windows NSIS installer
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci --no-sign
+        run: pnpm tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --ci --no-sign
 
       - name: Build Windows WebView2 offline NSIS installer
         run: pnpm tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.webview2-offline.conf.json --ci --no-sign
