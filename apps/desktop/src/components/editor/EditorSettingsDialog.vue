@@ -426,7 +426,7 @@ function observeElementTruncation(el: Ref<HTMLElement | null>, truncated: Ref<bo
   if (!el.value) return;
 
   const observer = new ResizeObserver(() => {
-    truncated.value = el.value!.scrollWidth > el.value!.clientWidth;
+    truncated.value = checkElementTruncation(el.value);
   });
 
   observer.observe(el.value);
@@ -1228,7 +1228,10 @@ function hasSettingsApplyFooter(value: SettingsCategory): boolean {
 }
 
 function settingsCategoryButton(value: SettingsCategory): string {
-  return ["w-auto shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-left text-sm transition-colors lg:w-full", value === activeSettingsTab.value ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground"].join(" ");
+  return [
+    "settings-category-button w-auto shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-left text-sm transition-colors lg:w-full",
+    value === activeSettingsTab.value ? "settings-category-button--active bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+  ].join(" ");
 }
 
 function openExternalUrl(url: string) {
@@ -2555,8 +2558,8 @@ onUnmounted(cleanupPreviewEditor);
         </component>
       </DialogHeader>
 
-      <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row">
-        <nav class="settingsCategoryNav flex min-h-0 shrink-0 gap-1 overflow-x-auto border-b pb-3 lg:w-40 lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
+      <div class="settings-layout flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row">
+        <nav class="settingsCategoryNav settings-category-nav flex min-h-0 shrink-0 gap-1 overflow-x-auto border-b pb-3 lg:w-40 lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
           <button v-for="category in settingsCategoryNav" :key="category.value" type="button" :class="settingsCategoryButton(category.value)" @click="activeSettingsTab = category.value">
             {{ category.label }}
           </button>
@@ -2955,8 +2958,8 @@ onUnmounted(cleanupPreviewEditor);
                     type="button"
                     variant="outline"
                     size="sm"
-                    class="h-8 gap-1.5 rounded-[6px] px-3"
-                    :class="themeMode === option.value ? 'border-primary/40 bg-primary/10 text-primary ring-1 ring-primary/30' : 'text-foreground'"
+                    class="settings-choice-button h-8 gap-1.5 rounded-[6px] px-3"
+                    :class="themeMode === option.value ? 'settings-choice-button--selected border-primary/40 bg-primary/10 text-primary ring-1 ring-primary/30' : 'text-foreground'"
                     @click="setThemeMode(option.value)"
                   >
                     <component :is="option.icon" class="h-3.5 w-3.5" />
@@ -2970,7 +2973,7 @@ onUnmounted(cleanupPreviewEditor);
               <div class="space-y-2">
                 <Label>{{ t("settings.appLayout") }}</Label>
                 <div class="grid grid-cols-2 gap-2">
-                  <Button type="button" variant="outline" class="h-auto justify-start border p-3" :class="editAppLayout === 'separated' ? 'border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setAppLayout('separated')">
+                  <Button type="button" variant="outline" class="settings-choice-card h-auto justify-start border p-3" :class="editAppLayout === 'separated' ? 'settings-choice-card--selected border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setAppLayout('separated')">
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger as-child>
@@ -2985,7 +2988,7 @@ onUnmounted(cleanupPreviewEditor);
                       </Tooltip>
                     </TooltipProvider>
                   </Button>
-                  <Button type="button" variant="outline" class="h-auto justify-start border p-3" :class="editAppLayout === 'classic' ? 'border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setAppLayout('classic')">
+                  <Button type="button" variant="outline" class="settings-choice-card h-auto justify-start border p-3" :class="editAppLayout === 'classic' ? 'settings-choice-card--selected border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setAppLayout('classic')">
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger as-child>
@@ -3007,7 +3010,7 @@ onUnmounted(cleanupPreviewEditor);
               <div class="space-y-2">
                 <Label>{{ t("settings.iconTheme") }}</Label>
                 <div class="grid grid-cols-2 gap-2">
-                  <Button type="button" variant="outline" class="h-auto justify-start border p-3" :class="editIconTheme === 'default' ? 'border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setIconTheme('default')">
+                  <Button type="button" variant="outline" class="settings-choice-card h-auto justify-start border p-3" :class="editIconTheme === 'default' ? 'settings-choice-card--selected border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setIconTheme('default')">
                     <div class="flex items-center gap-3 text-left w-full min-w-0">
                       <img src="/icon-preview-default.png" alt="DBX" class="h-12 w-12 shrink-0" />
                       <TooltipProvider>
@@ -3025,7 +3028,7 @@ onUnmounted(cleanupPreviewEditor);
                       </TooltipProvider>
                     </div>
                   </Button>
-                  <Button type="button" variant="outline" class="h-auto justify-start border p-3" :class="editIconTheme === 'black' ? 'border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setIconTheme('black')">
+                  <Button type="button" variant="outline" class="settings-choice-card h-auto justify-start border p-3" :class="editIconTheme === 'black' ? 'settings-choice-card--selected border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setIconTheme('black')">
                     <div class="flex items-center gap-3 text-left w-full min-w-0">
                       <img src="/icon-preview-black.png" alt="DBX" class="h-12 w-12 shrink-0" />
                       <TooltipProvider>
@@ -4660,3 +4663,78 @@ onUnmounted(cleanupPreviewEditor);
     </Dialog>
   </component>
 </template>
+
+<style>
+@media (min-width: 1024px) {
+  .settings-layout {
+    flex-direction: row !important;
+  }
+
+  .settings-category-nav {
+    width: 10rem !important;
+    flex-direction: column !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    border-bottom-width: 0 !important;
+    border-right: 1px solid var(--border) !important;
+    padding-bottom: 0 !important;
+    padding-right: 0.75rem !important;
+  }
+
+  .settings-category-button {
+    width: 100% !important;
+    text-align: left !important;
+  }
+}
+
+.settings-category-button--active {
+  background-color: rgb(23, 23, 23) !important;
+  color: rgb(255, 255, 255) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.settings-choice-button {
+  color: rgb(23, 23, 23);
+}
+
+.settings-choice-button--selected {
+  border-color: rgb(96, 165, 250) !important;
+  background-color: rgba(59, 130, 246, 0.1) !important;
+  color: rgb(29, 78, 216) !important;
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.45) !important;
+}
+
+.settings-choice-button--selected svg {
+  color: currentColor !important;
+}
+
+.settings-choice-card--selected {
+  border-color: rgb(96, 165, 250) !important;
+  background-color: rgba(59, 130, 246, 0.04) !important;
+  color: rgb(23, 23, 23) !important;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.45) !important;
+}
+
+.dark .settings-category-button--active {
+  background-color: rgb(245, 245, 245) !important;
+  color: rgb(23, 23, 23) !important;
+}
+
+.dark .settings-choice-button {
+  color: rgb(245, 245, 245);
+}
+
+.dark .settings-choice-button--selected {
+  border-color: rgb(147, 197, 253) !important;
+  background-color: rgba(96, 165, 250, 0.18) !important;
+  color: rgb(191, 219, 254) !important;
+  box-shadow: 0 0 0 1px rgba(147, 197, 253, 0.5) !important;
+}
+
+.dark .settings-choice-card--selected {
+  border-color: rgb(147, 197, 253) !important;
+  background-color: rgba(96, 165, 250, 0.12) !important;
+  color: rgb(245, 245, 245) !important;
+  box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.45) !important;
+}
+</style>
