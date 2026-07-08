@@ -1,0 +1,56 @@
+name: Windows Border Test Build
+
+on:
+  push:
+    branches:
+      - codex/fix-windows-window-top-border-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows executable
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --no-bundle --ci
+
+      - name: Package executable
+        shell: pwsh
+        run: |
+          $exePath = "target/x86_64-pc-windows-msvc/release/dbx.exe"
+          if (!(Test-Path $exePath)) {
+            Get-ChildItem -Path target -Filter dbx.exe -Recurse -ErrorAction SilentlyContinue
+            throw "Missing Windows executable: $exePath"
+          }
+
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          Copy-Item $exePath "artifact/DBX.exe" -Force
+          Copy-Item LICENSE "artifact/LICENSE" -Force
+          Compress-Archive -Path artifact/* -DestinationPath DBX-windows-x64-border-test.zip -Force
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBX-windows-x64-border-test
+          path: DBX-windows-x64-border-test.zip
