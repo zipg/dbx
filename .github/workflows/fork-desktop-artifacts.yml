@@ -82,7 +82,7 @@ jobs:
         if: matrix.name == 'windows-x64'
         run: pnpm tauri build --bundles nsis --target ${{ matrix.target }} --ci --no-sign
 
-      - name: Build Windows x64 WebView2 offline NSIS installer
+      - name: Collect Windows x64 artifacts
         if: matrix.name == 'windows-x64'
         shell: pwsh
         run: |
@@ -95,22 +95,7 @@ jobs:
             Write-Error "Missing standard Windows installer in ${bundleDir}"
             exit 1
           }
-          Copy-Item $standard.FullName (Join-Path artifacts ($standard.BaseName + "-standard" + $standard.Extension)) -Force
-
-          $before = @{}
-          Get-ChildItem $bundleDir -Filter "*.exe" | ForEach-Object { $before[$_.FullName] = $_.LastWriteTimeUtc }
-
-          pnpm tauri bundle --bundles nsis --target ${{ matrix.target }} --config src-tauri/tauri.webview2-offline.conf.json --ci --no-sign
-
-          $offline = Get-ChildItem $bundleDir -Filter "*.exe" |
-            Where-Object { !$before.ContainsKey($_.FullName) -or $_.LastWriteTimeUtc -gt $before[$_.FullName] } |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-          if (!$offline) {
-            Write-Error "Missing WebView2 offline installer in ${bundleDir}"
-            exit 1
-          }
-          Copy-Item $offline.FullName (Join-Path artifacts ($offline.BaseName + "-webview2-offline" + $offline.Extension)) -Force
+          Copy-Item $standard.FullName (Join-Path artifacts $standard.Name) -Force
           Get-ChildItem artifacts
 
       - name: Upload artifacts

@@ -1538,19 +1538,17 @@ watch(driverStoreTab, (tab) => {
 .driver-store-view {
   height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .driver-store-scroll {
-  display: flex;
+  height: 100%;
   min-height: 0;
-  overflow-y: hidden !important;
+  overflow-y: auto !important;
 }
 
 .driver-store-container {
   box-sizing: border-box;
-  display: flex;
-  min-height: 0;
-  height: 100%;
   width: 100%;
   max-width: none !important;
   margin-left: 0 !important;
@@ -1566,11 +1564,8 @@ watch(driverStoreTab, (tab) => {
 
 .driver-store-tabs-root {
   display: flex !important;
-  flex: 1 1 auto;
   width: 100%;
-  height: 100%;
   min-width: 0;
-  min-height: 0;
   flex-direction: column !important;
 }
 
@@ -1585,16 +1580,22 @@ watch(driverStoreTab, (tab) => {
 
 .driver-store-tab {
   min-height: 0;
-  overflow-y: auto;
+  overflow: visible;
+}
+
+.driver-store-tabs-root > [data-slot="tabs-content"][hidden] {
+  display: none !important;
 }
 
 .driver-store-agent-tab,
 .driver-store-jdbc-tab {
-  display: flex !important;
-  flex: 1 1 auto;
   flex-direction: column;
   gap: 1rem;
-  overflow: hidden;
+}
+
+.driver-store-agent-tab:not([hidden]),
+.driver-store-jdbc-tab:not([hidden]) {
+  display: flex !important;
 }
 
 .driver-store-agent-tab > :not([hidden]) ~ :not([hidden]),
@@ -1617,9 +1618,9 @@ watch(driverStoreTab, (tab) => {
 .driver-store-agent-list,
 .driver-store-jdbc-list {
   width: 100%;
-  flex: 1 1 auto !important;
-  min-height: 18rem;
-  overflow-y: auto;
+  flex: 0 0 auto !important;
+  min-height: 0;
+  overflow-y: visible;
   overflow-x: hidden;
 }
 

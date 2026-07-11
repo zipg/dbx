@@ -2830,9 +2830,9 @@ onUnmounted(cleanupPreviewEditor);
               <SqlFormatterSettingsPanel v-model="editSqlFormatter" @validity-change="(value: boolean) => (sqlFormatterConfigValid = value)" />
             </section>
 
-            <section v-else-if="activeSettingsTab === 'appearance'" class="flex flex-col gap-5 py-2">
-              <div class="grid gap-x-1.5 gap-y-4 sm:grid-cols-[minmax(0,127fr)_minmax(0,127fr)_minmax(0,191fr)_minmax(0,130fr)]">
-                <div class="space-y-2 min-w-0">
+            <section v-else-if="activeSettingsTab === 'appearance'" class="settings-appearance-section flex flex-col gap-5 py-2">
+              <div class="settings-appearance-top-grid">
+                <div class="settings-appearance-field min-w-0">
                   <div class="flex h-9 items-end">
                     <Label class="whitespace-normal leading-tight">{{ t("settings.languageTitle") }}</Label>
                   </div>
@@ -2860,7 +2860,7 @@ onUnmounted(cleanupPreviewEditor);
                   </Select>
                 </div>
 
-                <div class="space-y-2 min-w-0">
+                <div class="settings-appearance-field min-w-0">
                   <div class="flex h-9 items-end">
                     <Label class="whitespace-normal leading-tight">{{ t("settings.colorTheme") }}</Label>
                   </div>
@@ -2884,7 +2884,7 @@ onUnmounted(cleanupPreviewEditor);
                   </Select>
                 </div>
 
-                <div class="space-y-2 min-w-0">
+                <div class="settings-appearance-field min-w-0">
                   <div class="flex h-9 items-end gap-1">
                     <Label class="min-w-0 whitespace-normal leading-tight">{{ t("settings.uiFontFamily") }}</Label>
                     <HelpTooltip :label="t('settings.uiFontFamily')" trigger-class="[&_svg]:h-3 [&_svg]:w-3" content-class="max-w-64">
@@ -2923,7 +2923,7 @@ onUnmounted(cleanupPreviewEditor);
                   </SearchableSelect>
                 </div>
 
-                <div class="space-y-2 min-w-0">
+                <div class="settings-appearance-field min-w-0">
                   <div class="flex h-9 items-end gap-1">
                     <Label class="min-w-0 whitespace-normal leading-tight">{{ t("settings.uiScale") }}</Label>
                     <HelpTooltip :label="t('settings.uiScale')" trigger-class="[&_svg]:h-3 [&_svg]:w-3" content-class="max-w-64">
@@ -2949,9 +2949,9 @@ onUnmounted(cleanupPreviewEditor);
                 </div>
               </div>
 
-              <div class="space-y-2">
+              <div class="settings-appearance-group">
                 <Label>{{ t("settings.theme") }}</Label>
-                <div class="flex flex-wrap gap-2">
+                <div class="settings-appearance-button-row flex flex-wrap gap-2">
                   <Button
                     v-for="option in appThemeModeOptions"
                     :key="option.value"
@@ -2970,9 +2970,9 @@ onUnmounted(cleanupPreviewEditor);
 
               <Separator />
 
-              <div class="space-y-2">
+              <div class="settings-appearance-group">
                 <Label>{{ t("settings.appLayout") }}</Label>
-                <div class="grid grid-cols-2 gap-2">
+                <div class="settings-appearance-choice-grid">
                   <Button type="button" variant="outline" class="settings-choice-card h-auto justify-start border p-3" :class="editAppLayout === 'separated' ? 'settings-choice-card--selected border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setAppLayout('separated')">
                     <TooltipProvider>
                       <Tooltip>
@@ -3007,9 +3007,9 @@ onUnmounted(cleanupPreviewEditor);
               </div>
 
               <!-- <div v-if="!isWeb" class="space-y-2"> -->
-              <div class="space-y-2">
+              <div class="settings-appearance-group">
                 <Label>{{ t("settings.iconTheme") }}</Label>
-                <div class="grid grid-cols-2 gap-2">
+                <div class="settings-appearance-choice-grid">
                   <Button type="button" variant="outline" class="settings-choice-card h-auto justify-start border p-3" :class="editIconTheme === 'default' ? 'settings-choice-card--selected border-blue-300 ring-2 ring-blue-300/50' : ''" @click="setIconTheme('default')">
                     <div class="flex items-center gap-3 text-left w-full min-w-0">
                       <img src="/icon-preview-default.png" alt="DBX" class="h-12 w-12 shrink-0" />
@@ -3100,7 +3100,7 @@ onUnmounted(cleanupPreviewEditor);
 
               <Separator />
 
-              <div class="space-y-3">
+              <div class="settings-appearance-group settings-option-stack">
                 <Label>{{ t("settings.dataGridDisplay") }}</Label>
                 <div class="flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
@@ -4713,6 +4713,48 @@ onUnmounted(cleanupPreviewEditor);
   background-color: rgba(59, 130, 246, 0.04) !important;
   color: rgb(23, 23, 23) !important;
   box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.45) !important;
+}
+
+.settings-appearance-section > * + * {
+  margin-top: 1.25rem;
+}
+
+.settings-appearance-top-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 0.75rem;
+  row-gap: 1rem;
+}
+
+.settings-appearance-field > * + * {
+  margin-top: 0.5rem;
+}
+
+.settings-appearance-group > * + * {
+  margin-top: 0.625rem;
+}
+
+.settings-appearance-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.settings-appearance-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.625rem;
+}
+
+.settings-option-stack > * + * {
+  margin-top: 0.625rem;
+}
+
+@media (max-width: 760px) {
+  .settings-appearance-top-grid,
+  .settings-appearance-choice-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dark .settings-category-button--active {

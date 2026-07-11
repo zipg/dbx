@@ -37,10 +37,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits);
       )
     "
   >
-    <SwitchThumb
-      data-slot="switch-thumb"
-      class="dbx-switch-thumb bg-background dark:data-unchecked:bg-foreground dark:data-checked:bg-primary-foreground rounded-full group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3 group-data-[size=default]/switch:data-checked:translate-x-[calc(100%-2px)] group-data-[size=sm]/switch:data-checked:translate-x-[calc(100%-2px)] group-data-[size=default]/switch:data-unchecked:translate-x-0 group-data-[size=sm]/switch:data-unchecked:translate-x-0 pointer-events-none block ring-0 transition-transform"
-    >
+    <SwitchThumb data-slot="switch-thumb" class="dbx-switch-thumb bg-background dark:data-unchecked:bg-foreground dark:data-checked:bg-primary-foreground rounded-full group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3 pointer-events-none block ring-0 transition-transform">
       <slot name="thumb" v-bind="slotProps" />
     </SwitchThumb>
   </SwitchRoot>
@@ -53,6 +50,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits);
   align-items: center !important;
   position: relative;
   flex-shrink: 0;
+  overflow: hidden;
   border: 1px solid rgba(120, 120, 128, 0.22) !important;
   background-color: rgb(229, 229, 229) !important;
   vertical-align: middle;
@@ -96,7 +94,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits);
 .dbx-switch[data-size="default"][data-state="checked"] .dbx-switch-thumb,
 .dbx-switch[data-size="default"][data-checked] .dbx-switch-thumb,
 .dbx-switch[data-size="default"][aria-checked="true"] .dbx-switch-thumb {
-  transform: translateX(13.6px) !important;
+  transform: translateX(14px) !important;
 }
 
 .dbx-switch[data-size="sm"][data-state="checked"] .dbx-switch-thumb,
