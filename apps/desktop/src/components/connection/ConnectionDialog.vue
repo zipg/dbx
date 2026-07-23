@@ -5621,7 +5621,7 @@ function openExternalUrl(url: string) {
                                     ? 'catalog=paimon_catalog'
                                     : form.db_type === 'cassandra'
                                       ? 'localdatacenter=dc1'
-                                      : 'sslmode=disable'
+                                      : 'sslmode=prefer'
                       "
                     />
                   </div>
