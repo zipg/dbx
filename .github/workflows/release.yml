@@ -414,6 +414,13 @@ jobs:
           $version = "${env:GITHUB_REF_NAME}".TrimStart("v")
           $bundleDir = "target/x86_64-win7-windows-msvc/release/bundle/nsis"
           $offlineName = "DBX_${version}_x64-win7-webview2-109-offline-setup.exe"
+          $cargoMetadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $appVersion = ($cargoMetadata.packages | Where-Object { $_.name -eq "dbx" } | Select-Object -First 1).version
+
+          if (!$appVersion -or $appVersion -ne $version) {
+            Write-Error "Release tag version $version does not match the built DBX package version $appVersion"
+            exit 1
+          }
 
           pnpm tauri bundle --bundles nsis --target x86_64-win7-windows-msvc --config src-tauri/tauri.webview2-win7-offline.conf.json
 
