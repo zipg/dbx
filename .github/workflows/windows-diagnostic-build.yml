@@ -41,24 +41,21 @@ jobs:
           shared-key: diagnostic-win64-x86_64-pc-windows-msvc
           cache-on-failure: true
 
-      - name: Build frontend
-        run: pnpm build
-
-      - name: Build Windows release executable with bundled frontend
-        run: cargo build --locked --package dbx --release --target x86_64-pc-windows-msvc --no-default-features --features "duckdb-sidecar,mq-admin"
+      - name: Build Windows executable with bundled frontend
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --no-bundle -- --no-default-features --features "duckdb-sidecar,mq-admin"
 
       - name: Prepare artifact
         shell: pwsh
         run: |
           $artifactDir = "diagnostic-win64"
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/release/dbx.exe" (Join-Path $artifactDir "DBX-diagnostic-win64-aggressive.exe") -Force
-          Get-FileHash -LiteralPath (Join-Path $artifactDir "DBX-diagnostic-win64-aggressive.exe") -Algorithm SHA256 |
+          Copy-Item "target/x86_64-pc-windows-msvc/release/dbx.exe" (Join-Path $artifactDir "DBX-diagnostic-win64-tauri-keep-log.exe") -Force
+          Get-FileHash -LiteralPath (Join-Path $artifactDir "DBX-diagnostic-win64-tauri-keep-log.exe") -Algorithm SHA256 |
             ForEach-Object { $_.Hash.ToLowerInvariant() } |
-            Set-Content -Path (Join-Path $artifactDir "DBX-diagnostic-win64-aggressive.exe.sha256") -Encoding utf8NoBOM
+            Set-Content -Path (Join-Path $artifactDir "DBX-diagnostic-win64-tauri-keep-log.exe.sha256") -Encoding utf8NoBOM
 
       - name: Upload executable
         uses: actions/upload-artifact@v7
         with:
-          name: DBX-diagnostic-win64-aggressive
+          name: DBX-diagnostic-win64-tauri-keep-log
           path: diagnostic-win64/*
