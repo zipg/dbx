@@ -41,8 +41,11 @@ jobs:
           shared-key: diagnostic-win64-x86_64-pc-windows-msvc
           cache-on-failure: true
 
-      - name: Build Windows executable with bundled frontend
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --no-bundle -- --no-default-features --features "duckdb-sidecar,mq-admin"
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Windows release executable with bundled frontend
+        run: cargo build --locked --package dbx --release --target x86_64-pc-windows-msvc --no-default-features --features "duckdb-sidecar,mq-admin"
 
       - name: Prepare artifact
         shell: pwsh
