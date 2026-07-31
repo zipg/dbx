@@ -34,11 +34,18 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+          shared-key: diagnostic-win64-x86_64-pc-windows-msvc
+          cache-on-failure: true
+
       - name: Build frontend
         run: pnpm build
 
       - name: Build Windows executable
-        run: cargo build --locked --package dbx --release --target x86_64-pc-windows-msvc
+        run: cargo build --locked --package dbx --release --target x86_64-pc-windows-msvc --no-default-features --features "duckdb-sidecar,mq-admin"
 
       - name: Prepare artifact
         shell: pwsh
