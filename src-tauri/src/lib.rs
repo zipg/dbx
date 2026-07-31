@@ -307,6 +307,154 @@ fn startup_probe_windows_environment_summary() -> Option<String> {
     })
 }
 
+#[cfg(target_os = "windows")]
+fn startup_probe_windows_user_object_name(handle: windows_sys::Win32::Foundation::HANDLE) -> String {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::StationsAndDesktops::{GetUserObjectInformationW, UOI_NAME};
+
+    if handle.is_null() {
+        return "null".to_string();
+    }
+
+    let mut needed = 0u32;
+    unsafe {
+        let _ = GetUserObjectInformationW(handle, UOI_NAME, std::ptr::null_mut(), 0, &mut needed);
+    }
+    if needed == 0 {
+        let error = unsafe { GetLastError() };
+        return format!("unavailable error={error}");
+    }
+
+    let mut buffer = vec![0u16; (needed as usize / std::mem::size_of::<u16>()) + 1];
+    let ok = unsafe {
+        GetUserObjectInformationW(
+            handle,
+            UOI_NAME,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * std::mem::size_of::<u16>()) as u32,
+            &mut needed,
+        )
+    };
+    if ok == 0 {
+        let error = unsafe { GetLastError() };
+        return format!("unavailable error={error}");
+    }
+
+    let len = buffer.iter().position(|ch| *ch == 0).unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..len])
+}
+
+#[cfg(target_os = "windows")]
+fn startup_probe_windows_process_elevation_summary() -> String {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return format!("token_elevated=unknown open_error={}", GetLastError());
+        }
+
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut returned = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        );
+        let close_result = CloseHandle(token);
+        if ok == 0 {
+            return format!(
+                "token_elevated=unknown query_error={} token_close={}",
+                GetLastError(),
+                startup_probe_bool(close_result != 0)
+            );
+        }
+
+        format!(
+            "token_elevated={} token_query_bytes={} token_close={}",
+            startup_probe_bool(elevation.TokenIsElevated != 0),
+            returned,
+            startup_probe_bool(close_result != 0)
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn startup_probe_windows_native_summary() -> Option<String> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::StationsAndDesktops::{GetProcessWindowStation, GetThreadDesktop};
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, GetCurrentThreadId, GetStartupInfoW, STARTF_USESHOWWINDOW, STARTUPINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CMONITORS, SM_REMOTESESSION};
+
+    let mut session_id = 0u32;
+    let pid = unsafe { GetCurrentProcessId() };
+    let session_result = unsafe { ProcessIdToSessionId(pid, &mut session_id) };
+    let session_text = if session_result != 0 {
+        session_id.to_string()
+    } else {
+        format!("unknown error={}", unsafe { GetLastError() })
+    };
+
+    let mut startup_info = STARTUPINFOW::default();
+    unsafe {
+        GetStartupInfoW(&mut startup_info);
+    }
+    let uses_show_window = (startup_info.dwFlags & STARTF_USESHOWWINDOW) != 0;
+    let window_station = unsafe { startup_probe_windows_user_object_name(GetProcessWindowStation()) };
+    let desktop = unsafe { startup_probe_windows_user_object_name(GetThreadDesktop(GetCurrentThreadId())) };
+    let console_present = unsafe { !GetConsoleWindow().is_null() };
+    let monitor_count = unsafe { GetSystemMetrics(SM_CMONITORS) };
+    let remote_session = unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 };
+
+    Some(format!(
+        "windows native: process_session={} window_station={} desktop={} monitor_count={} remote_session={} console_window_present={} startup_uses_show_window={} startup_show_window={} {}",
+        session_text,
+        window_station,
+        desktop,
+        monitor_count,
+        startup_probe_bool(remote_session),
+        startup_probe_bool(console_present),
+        startup_probe_bool(uses_show_window),
+        startup_info.wShowWindow,
+        startup_probe_windows_process_elevation_summary()
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn startup_probe_windows_native_summary() -> Option<String> {
+    None
+}
+
+fn startup_probe_webview_runtime_summary() -> String {
+    match tauri::webview_version() {
+        Ok(version) => format!("webview runtime version: {version}"),
+        Err(error) => format!("webview runtime version unavailable: {error}"),
+    }
+}
+
+fn app_config_window_labels<R: tauri::Runtime>(app: &tauri::App<R>) -> String {
+    let labels = app.config().app.windows.iter().map(|window| window.label.as_str()).collect::<Vec<_>>();
+    if labels.is_empty() {
+        "config_window_labels=[]".to_string()
+    } else {
+        format!("config_window_labels=[{}]", labels.join(","))
+    }
+}
+
+fn app_window_label_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
+    let mut webview_windows = app.webview_windows().keys().cloned().collect::<Vec<_>>();
+    webview_windows.sort();
+    format!("webview_window_labels=[{}]", webview_windows.join(","))
+}
+
 fn startup_probe_page_load_event_label(event: PageLoadEvent) -> &'static str {
     match event {
         PageLoadEvent::Started => "started",
@@ -752,10 +900,10 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 fn main_window_probe_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     let Some(window) = app.get_webview_window("main") else {
-        return "main_window=missing".to_string();
+        return format!("main_window=missing; {}", app_window_label_state(app));
     };
     format!(
-        "main_window visible={:?} focused={:?} minimized={:?} maximized={:?} fullscreen={:?} position={:?} outer_size={:?} inner_size={:?}",
+        "main_window visible={:?} focused={:?} minimized={:?} maximized={:?} fullscreen={:?} position={:?} outer_size={:?} inner_size={:?}; {}",
         window.is_visible(),
         window.is_focused(),
         window.is_minimized(),
@@ -763,7 +911,8 @@ fn main_window_probe_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Stri
         window.is_fullscreen(),
         window.outer_position(),
         window.outer_size(),
-        window.inner_size()
+        window.inner_size(),
+        app_window_label_state(app)
     )
 }
 
@@ -1566,6 +1715,10 @@ pub fn run() {
     if let Some(summary) = startup_probe_windows_environment_summary() {
         append_startup_probe(summary);
     }
+    if let Some(summary) = startup_probe_windows_native_summary() {
+        append_startup_probe(summary);
+    }
+    append_startup_probe(startup_probe_webview_runtime_summary());
     #[cfg(target_os = "linux")]
     apply_linux_webkit_rendering_workarounds();
 
@@ -2417,6 +2570,7 @@ pub fn run() {
     let app = match builder.build(tauri::generate_context!()) {
         Ok(app) => {
             append_startup_probe(format!("tauri application built after {:?}", startup_begin.elapsed()));
+            append_startup_probe(app_config_window_labels(&app));
             append_startup_probe(format!("post-build window probe: {}", main_window_probe_state(app.handle())));
             app
         }
