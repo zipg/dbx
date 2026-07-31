@@ -45,14 +45,14 @@ jobs:
         run: pnpm build
 
       - name: Build Windows executable
-        run: cargo build --locked --package dbx --release --target x86_64-pc-windows-msvc --no-default-features --features "duckdb-sidecar,mq-admin"
+        run: cargo build --locked --package dbx --target x86_64-pc-windows-msvc --no-default-features --features "duckdb-sidecar,mq-admin"
 
       - name: Prepare artifact
         shell: pwsh
         run: |
           $artifactDir = "diagnostic-win64"
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/release/dbx.exe" (Join-Path $artifactDir "DBX-diagnostic-win64.exe") -Force
+          Copy-Item "target/x86_64-pc-windows-msvc/debug/dbx.exe" (Join-Path $artifactDir "DBX-diagnostic-win64.exe") -Force
           Get-FileHash -LiteralPath (Join-Path $artifactDir "DBX-diagnostic-win64.exe") -Algorithm SHA256 |
             ForEach-Object { $_.Hash.ToLowerInvariant() } |
             Set-Content -Path (Join-Path $artifactDir "DBX-diagnostic-win64.exe.sha256") -Encoding utf8NoBOM
