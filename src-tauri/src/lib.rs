@@ -194,6 +194,84 @@ fn startup_probe_should_keep_after_frontend_ready() -> bool {
     startup_probe_should_keep_after_frontend_ready_from_value(std::env::var(STARTUP_PROBE_KEEP_ENV).ok().as_deref())
 }
 
+fn startup_probe_build_error_message(error: &str) -> String {
+    format!("tauri application build failed: {error}")
+}
+
+fn startup_probe_bool(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn startup_probe_windows_environment_summary_from_values(
+    target_os: &str,
+    userdomain: Option<&str>,
+    userdnsdomain: Option<&str>,
+    computername: Option<&str>,
+    logonserver: Option<&str>,
+    sessionname: Option<&str>,
+    appdata: Option<&str>,
+    localappdata: Option<&str>,
+    webview2_additional_args: Option<&str>,
+    webview2_browser_folder: Option<&str>,
+    webview2_user_data_folder: Option<&str>,
+    dbx_webview2_no_sandbox: Option<&str>,
+    exe_path: Option<&std::path::Path>,
+) -> Option<String> {
+    if target_os != "windows" {
+        return None;
+    }
+    let userdomain_non_empty = userdomain.is_some_and(|value| !value.trim().is_empty());
+    let computername_non_empty = computername.is_some_and(|value| !value.trim().is_empty());
+    let userdomain_matches_computer = match (userdomain, computername) {
+        (Some(domain), Some(computer)) => domain.eq_ignore_ascii_case(computer),
+        _ => false,
+    };
+    let likely_domain_account = userdomain_non_empty
+        && computername_non_empty
+        && !userdomain_matches_computer
+        && userdomain != Some("WORKGROUP");
+    let exe_in_program_files = exe_path
+        .and_then(|path| path.to_str())
+        .is_some_and(|path| path.to_ascii_lowercase().starts_with("c:\\program files\\"));
+    Some(format!(
+        "windows environment: userdomain_present={} userdnsdomain_present={} logonserver_present={} likely_domain_account={} session_present={} appdata_present={} localappdata_present={} exe_in_program_files={} webview2_additional_args_present={} webview2_browser_folder_present={} webview2_user_data_folder_present={} dbx_webview2_no_sandbox={}",
+        startup_probe_bool(userdomain_non_empty),
+        startup_probe_bool(userdnsdomain.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(logonserver.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(likely_domain_account),
+        startup_probe_bool(sessionname.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(appdata.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(localappdata.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(exe_in_program_files),
+        startup_probe_bool(webview2_additional_args.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(webview2_browser_folder.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(webview2_user_data_folder.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(matches!(dbx_webview2_no_sandbox, Some("1"))),
+    ))
+}
+
+fn startup_probe_windows_environment_summary() -> Option<String> {
+    startup_probe_windows_environment_summary_from_values(
+        std::env::consts::OS,
+        std::env::var("USERDOMAIN").ok().as_deref(),
+        std::env::var("USERDNSDOMAIN").ok().as_deref(),
+        std::env::var("COMPUTERNAME").ok().as_deref(),
+        std::env::var("LOGONSERVER").ok().as_deref(),
+        std::env::var("SESSIONNAME").ok().as_deref(),
+        std::env::var("APPDATA").ok().as_deref(),
+        std::env::var("LOCALAPPDATA").ok().as_deref(),
+        std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok().as_deref(),
+        std::env::var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER").ok().as_deref(),
+        std::env::var("WEBVIEW2_USER_DATA_FOLDER").ok().as_deref(),
+        std::env::var("DBX_WEBVIEW2_NO_SANDBOX").ok().as_deref(),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
 fn ensure_startup_probe_parent_dir(path: &std::path::Path) -> bool {
     let Some(dir) = path.parent() else {
         return false;
@@ -231,6 +309,14 @@ fn append_startup_probe(message: impl AsRef<str>) {
         std::process::id(),
         message.as_ref()
     );
+}
+
+fn install_startup_probe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        append_startup_probe(format!("panic before frontend ready: {info}"));
+        default_hook(info);
+    }));
 }
 
 pub(crate) fn clear_startup_probe_after_frontend_ready() {
@@ -928,9 +1014,10 @@ mod tests {
         linux_webkit_rendering_workarounds, native_window_decorations_override, should_confirm_app_exit_request,
         should_enable_single_instance, should_fallback_to_native_quit, should_hide_window_on_close,
         should_setup_desktop_tray, should_show_main_window_after_setup, should_show_main_window_before_setup_tasks,
-        startup_probe_log_dir_from_inputs, startup_probe_should_keep_after_frontend_ready_from_value,
-        tray_menu_labels_for_locale, uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver,
-        WINDOWS_APP_DATA_DIR_NAME,
+        startup_probe_build_error_message, startup_probe_log_dir_from_inputs,
+        startup_probe_should_keep_after_frontend_ready_from_value,
+        startup_probe_windows_environment_summary_from_values, tray_menu_labels_for_locale,
+        uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver, WINDOWS_APP_DATA_DIR_NAME,
     };
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
@@ -1079,6 +1166,42 @@ mod tests {
         assert!(!startup_probe_should_keep_after_frontend_ready_from_value(None));
         assert!(!startup_probe_should_keep_after_frontend_ready_from_value(Some("true")));
         assert!(!startup_probe_should_keep_after_frontend_ready_from_value(Some("0")));
+    }
+
+    #[test]
+    fn startup_probe_build_error_message_includes_error() {
+        assert_eq!(
+            startup_probe_build_error_message("webview initialization failed"),
+            "tauri application build failed: webview initialization failed"
+        );
+    }
+
+    #[test]
+    fn startup_probe_windows_environment_summary_is_sanitized() {
+        let message = startup_probe_windows_environment_summary_from_values(
+            "windows",
+            Some("CORP"),
+            Some("corp.example.test"),
+            Some("LAPTOP-123"),
+            Some("\\\\DC01"),
+            Some("Console"),
+            Some(r"C:\Users\alice\AppData\Roaming"),
+            Some(r"C:\Users\alice\AppData\Local"),
+            Some("--disable-features=RendererCodeIntegrity"),
+            None,
+            Some(r"C:\Users\alice\AppData\Local\DBXWebView"),
+            Some("1"),
+            Some(Path::new(r"C:\Program Files\DBX\dbx.exe")),
+        )
+        .unwrap();
+
+        assert!(message.contains("likely_domain_account=yes"));
+        assert!(message.contains("userdnsdomain_present=yes"));
+        assert!(message.contains("webview2_additional_args_present=yes"));
+        assert!(message.contains("dbx_webview2_no_sandbox=yes"));
+        assert!(!message.contains("CORP"));
+        assert!(!message.contains("alice"));
+        assert!(!message.contains("DC01"));
     }
 
     #[test]
@@ -1280,6 +1403,7 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     reset_startup_probe();
+    install_startup_probe_panic_hook();
     append_startup_probe(format!(
         "process start version={} os={} arch={} exe={:?}",
         env!("CARGO_PKG_VERSION"),
@@ -1290,19 +1414,33 @@ pub fn run() {
     rustls::crypto::aws_lc_rs::default_provider().install_default().expect("Failed to install rustls crypto provider");
     configure_webview2_sandbox_compat();
     append_startup_probe("runtime prerequisites configured");
+    if let Some(summary) = startup_probe_windows_environment_summary() {
+        append_startup_probe(summary);
+    }
     #[cfg(target_os = "linux")]
     apply_linux_webkit_rendering_workarounds();
 
     let startup_begin = Instant::now();
 
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+    append_startup_probe("creating tauri builder");
+    let builder = tauri::Builder::default();
+    append_startup_probe("registering deep-link plugin");
+    let builder = builder.plugin(tauri_plugin_deep_link::init());
+    append_startup_probe("deep-link plugin registered");
+    append_startup_probe("registering clipboard plugin");
+    let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+    append_startup_probe("clipboard plugin registered");
+    append_startup_probe("registering dialog plugin");
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+    append_startup_probe("dialog plugin registered");
+    append_startup_probe("registering fs plugin");
+    let builder = builder.plugin(tauri_plugin_fs::init());
+    append_startup_probe("fs plugin registered");
 
     let builder = if should_enable_single_instance(cfg!(debug_assertions)) {
+        append_startup_probe("registering single-instance plugin");
         builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            append_startup_probe("single-instance callback entered");
             let links = commands::deep_link::connection_deep_links_from_args(args.clone());
             open_connection_deep_links(app, links);
 
@@ -1324,18 +1462,27 @@ pub fn run() {
             show_main_window(app);
         }))
     } else {
+        append_startup_probe("single-instance plugin skipped for debug build");
         builder
     };
+    append_startup_probe("single-instance plugin stage completed");
 
-    let builder = builder
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state_guard::persisted_main_window_state_flags())
-                .build(),
-        );
+    append_startup_probe("registering shell plugin");
+    let builder = builder.plugin(tauri_plugin_shell::init());
+    append_startup_probe("shell plugin registered");
+    append_startup_probe("registering updater plugin");
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    append_startup_probe("updater plugin registered");
+    append_startup_probe("registering process plugin");
+    let builder = builder.plugin(tauri_plugin_process::init());
+    append_startup_probe("process plugin registered");
+    append_startup_probe("registering window-state plugin");
+    let builder = builder.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(window_state_guard::persisted_main_window_state_flags())
+            .build(),
+    );
+    append_startup_probe("window-state plugin registered");
 
     // macOS app menu (Cmd+Q / Dock Quit). Skip on Linux/Windows so an empty menu bar
     // is not installed where there was none before.
@@ -1350,7 +1497,8 @@ pub fn run() {
         }
     });
 
-    builder
+    append_startup_probe("configuring tauri application builder");
+    let builder = builder
         .manage(CloseBehaviorState::new())
         .manage(AppLocaleState::new())
         .on_page_load(|webview, payload| {
@@ -2101,98 +2249,105 @@ pub fn run() {
             commands::tunnel_profiles::load_tunnel_profiles,
             commands::tunnel_profiles::save_tunnel_profiles,
             commands::tunnel_profiles::test_tunnel_profile,
-        ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            #[cfg(not(target_os = "macos"))]
-            let _ = (&app_handle, &event);
+        ]);
+    append_startup_probe("building tauri application");
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => {
+            append_startup_probe(format!("tauri application built after {:?}", startup_begin.elapsed()));
+            app
+        }
+        Err(error) => {
+            append_startup_probe(startup_probe_build_error_message(&error.to_string()));
+            panic!("error while building tauri application: {error}");
+        }
+    };
+    append_startup_probe("entering tauri event loop");
+    app.run(|app_handle, event| {
+        #[cfg(not(target_os = "macos"))]
+        let _ = (&app_handle, &event);
 
-            if let RunEvent::ExitRequested { code, api, .. } = &event {
-                let confirmed_exit = app_handle
-                    .try_state::<CloseBehaviorState>()
-                    .map(|state| state.take_confirmed_exit())
-                    .unwrap_or(false);
-                if should_confirm_app_exit_request(std::env::consts::OS, *code, confirmed_exit) {
-                    api.prevent_exit();
-                    request_app_close(app_handle, "quit");
-                } else {
-                    tauri::async_runtime::block_on(async {
-                        if let Some(server) = app_handle.try_state::<commands::redis_pubsub_server::PubSubServerState>()
-                        {
-                            server.shutdown(Duration::from_secs(1)).await;
-                        }
-                        if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
-                            state.shutdown(Duration::from_secs(3)).await;
-                        }
-                    });
-                }
-            }
-
-            #[cfg(target_os = "macos")]
-            if let RunEvent::Opened { urls } = &event {
-                let links: Vec<String> = urls
-                    .iter()
-                    .map(|url| url.to_string())
-                    .filter_map(|url| commands::deep_link::connection_deep_link_from_arg(&url))
-                    .collect();
-                open_connection_deep_links(app_handle, links);
-
-                let paths: Vec<String> = urls
-                    .iter()
-                    .filter_map(|url| url.to_file_path().ok())
-                    .filter(|path| commands::external_sql::is_sql_file_path(path))
-                    .map(|path| path.to_string_lossy().to_string())
-                    .collect();
-                if !paths.is_empty() {
-                    if let Some(state) = app_handle.try_state::<commands::external_sql::ExternalSqlOpenState>() {
-                        state.push(paths.clone());
+        if let RunEvent::ExitRequested { code, api, .. } = &event {
+            let confirmed_exit =
+                app_handle.try_state::<CloseBehaviorState>().map(|state| state.take_confirmed_exit()).unwrap_or(false);
+            if should_confirm_app_exit_request(std::env::consts::OS, *code, confirmed_exit) {
+                api.prevent_exit();
+                request_app_close(app_handle, "quit");
+            } else {
+                tauri::async_runtime::block_on(async {
+                    if let Some(server) = app_handle.try_state::<commands::redis_pubsub_server::PubSubServerState>() {
+                        server.shutdown(Duration::from_secs(1)).await;
                     }
-                    let _ = app_handle.emit("dbx-open-sql-files", paths);
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-
-                let db_paths: Vec<String> = urls
-                    .iter()
-                    .filter_map(|url| url.to_file_path().ok())
-                    .filter(|path| commands::external_db::is_db_file_path(path))
-                    .map(|path| path.to_string_lossy().to_string())
-                    .collect();
-                if !db_paths.is_empty() {
-                    if let Some(state) = app_handle.try_state::<commands::external_db::ExternalDbOpenState>() {
-                        state.push(db_paths.clone());
-                    }
-                    let _ = app_handle.emit("dbx-open-db-files", db_paths);
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-            }
-
-            #[cfg(target_os = "macos")]
-            if let RunEvent::Reopen { has_visible_windows, .. } = &event {
-                if !has_visible_windows {
-                    show_main_window(app_handle);
-                }
-                let app_handle = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        state.refresh_connections().await;
+                    if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                        state.shutdown(Duration::from_secs(3)).await;
                     }
                 });
             }
+        }
 
-            if let RunEvent::Resumed = &event {
-                let app_handle = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        state.refresh_connections().await;
-                    }
-                });
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Opened { urls } = &event {
+            let links: Vec<String> = urls
+                .iter()
+                .map(|url| url.to_string())
+                .filter_map(|url| commands::deep_link::connection_deep_link_from_arg(&url))
+                .collect();
+            open_connection_deep_links(app_handle, links);
+
+            let paths: Vec<String> = urls
+                .iter()
+                .filter_map(|url| url.to_file_path().ok())
+                .filter(|path| commands::external_sql::is_sql_file_path(path))
+                .map(|path| path.to_string_lossy().to_string())
+                .collect();
+            if !paths.is_empty() {
+                if let Some(state) = app_handle.try_state::<commands::external_sql::ExternalSqlOpenState>() {
+                    state.push(paths.clone());
+                }
+                let _ = app_handle.emit("dbx-open-sql-files", paths);
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
-        });
+
+            let db_paths: Vec<String> = urls
+                .iter()
+                .filter_map(|url| url.to_file_path().ok())
+                .filter(|path| commands::external_db::is_db_file_path(path))
+                .map(|path| path.to_string_lossy().to_string())
+                .collect();
+            if !db_paths.is_empty() {
+                if let Some(state) = app_handle.try_state::<commands::external_db::ExternalDbOpenState>() {
+                    state.push(db_paths.clone());
+                }
+                let _ = app_handle.emit("dbx-open-db-files", db_paths);
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { has_visible_windows, .. } = &event {
+            if !has_visible_windows {
+                show_main_window(app_handle);
+            }
+            let app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    state.refresh_connections().await;
+                }
+            });
+        }
+
+        if let RunEvent::Resumed = &event {
+            let app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    state.refresh_connections().await;
+                }
+            });
+        }
+    });
 }
