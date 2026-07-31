@@ -1,0 +1,57 @@
+name: Windows Diagnostic Build
+
+on:
+  push:
+    branches:
+      - codex/windows-startup-diagnostics-win64-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  win64-exe:
+    name: Build Windows x64 exe
+    runs-on: windows-2022
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Windows executable
+        run: cargo build --locked --package dbx --release --target x86_64-pc-windows-msvc
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          $artifactDir = "diagnostic-win64"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/dbx.exe" (Join-Path $artifactDir "DBX-diagnostic-win64.exe") -Force
+          Get-FileHash -LiteralPath (Join-Path $artifactDir "DBX-diagnostic-win64.exe") -Algorithm SHA256 |
+            ForEach-Object { $_.Hash.ToLowerInvariant() } |
+            Set-Content -Path (Join-Path $artifactDir "DBX-diagnostic-win64.exe.sha256") -Encoding utf8NoBOM
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: DBX-diagnostic-win64
+          path: diagnostic-win64/*
