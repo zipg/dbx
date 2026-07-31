@@ -206,70 +206,75 @@ fn startup_probe_bool(value: bool) -> &'static str {
     }
 }
 
+struct StartupProbeWindowsEnvironmentInput<'a> {
+    target_os: &'a str,
+    userdomain: Option<&'a str>,
+    userdnsdomain: Option<&'a str>,
+    computername: Option<&'a str>,
+    logonserver: Option<&'a str>,
+    sessionname: Option<&'a str>,
+    appdata: Option<&'a str>,
+    localappdata: Option<&'a str>,
+    webview2_additional_args: Option<&'a str>,
+    webview2_browser_folder: Option<&'a str>,
+    webview2_user_data_folder: Option<&'a str>,
+    dbx_webview2_no_sandbox: Option<&'a str>,
+    exe_path: Option<&'a std::path::Path>,
+}
+
 fn startup_probe_windows_environment_summary_from_values(
-    target_os: &str,
-    userdomain: Option<&str>,
-    userdnsdomain: Option<&str>,
-    computername: Option<&str>,
-    logonserver: Option<&str>,
-    sessionname: Option<&str>,
-    appdata: Option<&str>,
-    localappdata: Option<&str>,
-    webview2_additional_args: Option<&str>,
-    webview2_browser_folder: Option<&str>,
-    webview2_user_data_folder: Option<&str>,
-    dbx_webview2_no_sandbox: Option<&str>,
-    exe_path: Option<&std::path::Path>,
+    input: StartupProbeWindowsEnvironmentInput<'_>,
 ) -> Option<String> {
-    if target_os != "windows" {
+    if input.target_os != "windows" {
         return None;
     }
-    let userdomain_non_empty = userdomain.is_some_and(|value| !value.trim().is_empty());
-    let computername_non_empty = computername.is_some_and(|value| !value.trim().is_empty());
-    let userdomain_matches_computer = match (userdomain, computername) {
+    let userdomain_non_empty = input.userdomain.is_some_and(|value| !value.trim().is_empty());
+    let computername_non_empty = input.computername.is_some_and(|value| !value.trim().is_empty());
+    let userdomain_matches_computer = match (input.userdomain, input.computername) {
         (Some(domain), Some(computer)) => domain.eq_ignore_ascii_case(computer),
         _ => false,
     };
     let likely_domain_account = userdomain_non_empty
         && computername_non_empty
         && !userdomain_matches_computer
-        && userdomain != Some("WORKGROUP");
-    let exe_in_program_files = exe_path
+        && input.userdomain != Some("WORKGROUP");
+    let exe_in_program_files = input
+        .exe_path
         .and_then(|path| path.to_str())
         .is_some_and(|path| path.to_ascii_lowercase().starts_with("c:\\program files\\"));
     Some(format!(
         "windows environment: userdomain_present={} userdnsdomain_present={} logonserver_present={} likely_domain_account={} session_present={} appdata_present={} localappdata_present={} exe_in_program_files={} webview2_additional_args_present={} webview2_browser_folder_present={} webview2_user_data_folder_present={} dbx_webview2_no_sandbox={}",
         startup_probe_bool(userdomain_non_empty),
-        startup_probe_bool(userdnsdomain.is_some_and(|value| !value.trim().is_empty())),
-        startup_probe_bool(logonserver.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(input.userdnsdomain.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(input.logonserver.is_some_and(|value| !value.trim().is_empty())),
         startup_probe_bool(likely_domain_account),
-        startup_probe_bool(sessionname.is_some_and(|value| !value.trim().is_empty())),
-        startup_probe_bool(appdata.is_some_and(|value| !value.trim().is_empty())),
-        startup_probe_bool(localappdata.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(input.sessionname.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(input.appdata.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(input.localappdata.is_some_and(|value| !value.trim().is_empty())),
         startup_probe_bool(exe_in_program_files),
-        startup_probe_bool(webview2_additional_args.is_some_and(|value| !value.trim().is_empty())),
-        startup_probe_bool(webview2_browser_folder.is_some_and(|value| !value.trim().is_empty())),
-        startup_probe_bool(webview2_user_data_folder.is_some_and(|value| !value.trim().is_empty())),
-        startup_probe_bool(matches!(dbx_webview2_no_sandbox, Some("1"))),
+        startup_probe_bool(input.webview2_additional_args.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(input.webview2_browser_folder.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(input.webview2_user_data_folder.is_some_and(|value| !value.trim().is_empty())),
+        startup_probe_bool(matches!(input.dbx_webview2_no_sandbox, Some("1"))),
     ))
 }
 
 fn startup_probe_windows_environment_summary() -> Option<String> {
-    startup_probe_windows_environment_summary_from_values(
-        std::env::consts::OS,
-        std::env::var("USERDOMAIN").ok().as_deref(),
-        std::env::var("USERDNSDOMAIN").ok().as_deref(),
-        std::env::var("COMPUTERNAME").ok().as_deref(),
-        std::env::var("LOGONSERVER").ok().as_deref(),
-        std::env::var("SESSIONNAME").ok().as_deref(),
-        std::env::var("APPDATA").ok().as_deref(),
-        std::env::var("LOCALAPPDATA").ok().as_deref(),
-        std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok().as_deref(),
-        std::env::var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER").ok().as_deref(),
-        std::env::var("WEBVIEW2_USER_DATA_FOLDER").ok().as_deref(),
-        std::env::var("DBX_WEBVIEW2_NO_SANDBOX").ok().as_deref(),
-        std::env::current_exe().ok().as_deref(),
-    )
+    startup_probe_windows_environment_summary_from_values(StartupProbeWindowsEnvironmentInput {
+        target_os: std::env::consts::OS,
+        userdomain: std::env::var("USERDOMAIN").ok().as_deref(),
+        userdnsdomain: std::env::var("USERDNSDOMAIN").ok().as_deref(),
+        computername: std::env::var("COMPUTERNAME").ok().as_deref(),
+        logonserver: std::env::var("LOGONSERVER").ok().as_deref(),
+        sessionname: std::env::var("SESSIONNAME").ok().as_deref(),
+        appdata: std::env::var("APPDATA").ok().as_deref(),
+        localappdata: std::env::var("LOCALAPPDATA").ok().as_deref(),
+        webview2_additional_args: std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok().as_deref(),
+        webview2_browser_folder: std::env::var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER").ok().as_deref(),
+        webview2_user_data_folder: std::env::var("WEBVIEW2_USER_DATA_FOLDER").ok().as_deref(),
+        dbx_webview2_no_sandbox: std::env::var("DBX_WEBVIEW2_NO_SANDBOX").ok().as_deref(),
+        exe_path: std::env::current_exe().ok().as_deref(),
+    })
 }
 
 fn ensure_startup_probe_parent_dir(path: &std::path::Path) -> bool {
@@ -1017,7 +1022,8 @@ mod tests {
         startup_probe_build_error_message, startup_probe_log_dir_from_inputs,
         startup_probe_should_keep_after_frontend_ready_from_value,
         startup_probe_windows_environment_summary_from_values, tray_menu_labels_for_locale,
-        uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver, WINDOWS_APP_DATA_DIR_NAME,
+        uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver, StartupProbeWindowsEnvironmentInput,
+        WINDOWS_APP_DATA_DIR_NAME,
     };
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
@@ -1178,21 +1184,21 @@ mod tests {
 
     #[test]
     fn startup_probe_windows_environment_summary_is_sanitized() {
-        let message = startup_probe_windows_environment_summary_from_values(
-            "windows",
-            Some("CORP"),
-            Some("corp.example.test"),
-            Some("LAPTOP-123"),
-            Some("\\\\DC01"),
-            Some("Console"),
-            Some(r"C:\Users\alice\AppData\Roaming"),
-            Some(r"C:\Users\alice\AppData\Local"),
-            Some("--disable-features=RendererCodeIntegrity"),
-            None,
-            Some(r"C:\Users\alice\AppData\Local\DBXWebView"),
-            Some("1"),
-            Some(Path::new(r"C:\Program Files\DBX\dbx.exe")),
-        )
+        let message = startup_probe_windows_environment_summary_from_values(StartupProbeWindowsEnvironmentInput {
+            target_os: "windows",
+            userdomain: Some("CORP"),
+            userdnsdomain: Some("corp.example.test"),
+            computername: Some("LAPTOP-123"),
+            logonserver: Some("\\\\DC01"),
+            sessionname: Some("Console"),
+            appdata: Some(r"C:\Users\alice\AppData\Roaming"),
+            localappdata: Some(r"C:\Users\alice\AppData\Local"),
+            webview2_additional_args: Some("--disable-features=RendererCodeIntegrity"),
+            webview2_browser_folder: None,
+            webview2_user_data_folder: Some(r"C:\Users\alice\AppData\Local\DBXWebView"),
+            dbx_webview2_no_sandbox: Some("1"),
+            exe_path: Some(Path::new(r"C:\Program Files\DBX\dbx.exe")),
+        })
         .unwrap();
 
         assert!(message.contains("likely_domain_account=yes"));
