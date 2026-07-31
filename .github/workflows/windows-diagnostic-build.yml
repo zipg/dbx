@@ -52,13 +52,13 @@ jobs:
         run: |
           $artifactDir = "diagnostic-win64"
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/debug/dbx.exe" (Join-Path $artifactDir "DBX-diagnostic-win64.exe") -Force
-          Get-FileHash -LiteralPath (Join-Path $artifactDir "DBX-diagnostic-win64.exe") -Algorithm SHA256 |
+          Copy-Item "target/x86_64-pc-windows-msvc/debug/dbx.exe" (Join-Path $artifactDir "DBX-diagnostic-win64-aggressive.exe") -Force
+          Get-FileHash -LiteralPath (Join-Path $artifactDir "DBX-diagnostic-win64-aggressive.exe") -Algorithm SHA256 |
             ForEach-Object { $_.Hash.ToLowerInvariant() } |
-            Set-Content -Path (Join-Path $artifactDir "DBX-diagnostic-win64.exe.sha256") -Encoding utf8NoBOM
+            Set-Content -Path (Join-Path $artifactDir "DBX-diagnostic-win64-aggressive.exe.sha256") -Encoding utf8NoBOM
 
       - name: Upload executable
         uses: actions/upload-artifact@v7
         with:
-          name: DBX-diagnostic-win64
+          name: DBX-diagnostic-win64-aggressive
           path: diagnostic-win64/*

@@ -878,9 +878,9 @@ fn is_export_insert_column(
     column_type: Option<&str>,
     column_extra: Option<&str>,
 ) -> bool {
-    !is_internal_export_column(database_type, column)
-        && !is_postgres_tsvector_export_column(database_type, column_type)
-        && !(database_type == Some(DatabaseType::Mysql) && is_mysql_generated_column_extra(column_extra))
+    !(is_internal_export_column(database_type, column)
+        || is_postgres_tsvector_export_column(database_type, column_type)
+        || database_type == Some(DatabaseType::Mysql) && is_mysql_generated_column_extra(column_extra))
 }
 
 fn is_postgres_json_export_column(database_type: Option<DatabaseType>, column_type: Option<&str>) -> bool {

@@ -42,6 +42,8 @@ const STARTUP_PROBE_MAX_RUN_EVENTS: usize = 80;
 static STARTUP_PROBE_STATE: Mutex<StartupProbeState> = Mutex::new(StartupProbeState::new());
 #[cfg(target_os = "windows")]
 const WEBVIEW2_NO_SANDBOX_ENV: &str = "DBX_WEBVIEW2_NO_SANDBOX";
+#[cfg(target_os = "windows")]
+const WEBVIEW2_DIAGNOSTIC_USER_DATA_DIR_NAME: &str = "webview2-diagnostic";
 #[cfg(target_os = "macos")]
 const APP_MENU_QUIT_ID: &str = "app-menu-quit";
 #[cfg(target_os = "macos")]
@@ -77,6 +79,10 @@ impl StartupProbeState {
         }
         self.run_event_count += 1;
         Some((self.run_event_count, self.run_event_count == max_events))
+    }
+
+    fn run_event_count(&self) -> usize {
+        self.run_event_count
     }
 }
 
@@ -575,23 +581,78 @@ pub(crate) fn clear_startup_probe_after_frontend_ready() {
 }
 
 #[cfg(target_os = "windows")]
+fn append_webview2_browser_argument(argument: &str) -> bool {
+    let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    if args.split_whitespace().any(|arg| arg == argument) {
+        return false;
+    }
+    if !args.is_empty() {
+        args.push(' ');
+    }
+    args.push_str(argument);
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+    true
+}
+
+#[cfg(target_os = "windows")]
 fn configure_webview2_sandbox_compat() {
-    if !matches!(std::env::var(WEBVIEW2_NO_SANDBOX_ENV).as_deref(), Ok("1")) {
-        return;
+    let mut applied = Vec::new();
+
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").filter(|value| !value.is_empty()).is_none() {
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()).map(PathBuf::from) {
+            let user_data_dir = dir.join(WINDOWS_APP_DATA_DIR_NAME).join(WEBVIEW2_DIAGNOSTIC_USER_DATA_DIR_NAME);
+            let _ = std::fs::create_dir_all(&user_data_dir);
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &user_data_dir);
+            applied.push(format!("user_data_folder={}", user_data_dir.display()));
+        }
     }
 
-    let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
-    if !args.split_whitespace().any(|arg| arg == "--no-sandbox") {
-        if !args.is_empty() {
-            args.push(' ');
-        }
-        args.push_str("--no-sandbox");
+    if append_webview2_browser_argument("--disable-gpu") {
+        applied.push("--disable-gpu".to_string());
     }
-    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+    if append_webview2_browser_argument("--disable-features=RendererCodeIntegrity") {
+        applied.push("--disable-features=RendererCodeIntegrity".to_string());
+    }
+    if append_webview2_browser_argument("--no-sandbox") {
+        applied.push("--no-sandbox".to_string());
+    }
+    if matches!(std::env::var(WEBVIEW2_NO_SANDBOX_ENV).as_deref(), Ok("1")) {
+        applied.push("legacy_no_sandbox_env=1".to_string());
+    }
+
+    if applied.is_empty() {
+        append_startup_probe("diagnostic WebView2 compatibility overrides: none");
+    } else {
+        append_startup_probe(format!("diagnostic WebView2 compatibility overrides applied: {}", applied.join(" ")));
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
 fn configure_webview2_sandbox_compat() {}
+
+fn startup_probe_run_event_count() -> usize {
+    STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).run_event_count()
+}
+
+fn start_startup_probe_watchdog<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut elapsed = 0_u64;
+        for delay in [3_u64, 10, 30, 60, 120] {
+            std::thread::sleep(Duration::from_secs(delay));
+            elapsed += delay;
+            let count = startup_probe_run_event_count();
+            append_startup_probe(format!(
+                "watchdog after {elapsed}s: run_event_count={count}; {}",
+                app_window_label_state(&app)
+            ));
+            if count > 0 && app.get_webview_window("main").is_some() {
+                append_startup_probe("watchdog stopping: event loop and main window observed");
+                return;
+            }
+        }
+    });
+}
 
 fn should_confirm_app_exit_request(target_os: &str, exit_code: Option<i32>, confirmed_exit: bool) -> bool {
     should_hide_window_on_close(target_os) && exit_code != Some(tauri::RESTART_EXIT_CODE) && !confirmed_exit
@@ -2580,6 +2641,7 @@ pub fn run() {
         }
     };
     append_startup_probe("entering tauri event loop");
+    start_startup_probe_watchdog(app.handle());
     app.run(|app_handle, event| {
         log_startup_probe_run_event(app_handle, &event);
 
