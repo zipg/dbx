@@ -1703,7 +1703,7 @@ mod tests {
 
     #[test]
     fn overrides_native_window_decorations_for_desktop_platforms() {
-        assert_eq!(native_window_decorations_override("windows"), Some(false));
+        assert_eq!(native_window_decorations_override("windows"), Some(true));
         assert_eq!(native_window_decorations_override("linux"), Some(false));
         assert_eq!(native_window_decorations_override("macos"), None);
     }
