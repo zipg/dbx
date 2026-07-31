@@ -13,7 +13,7 @@ use dbx_core::storage::{maybe_import_user_data_db, DesktopIconTheme, DesktopSett
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
@@ -38,6 +38,8 @@ const STARTUP_PROBE_LOG_FILE: &str = "startup.log";
 const STARTUP_PROBE_LOG_DIR_ENV: &str = "DBX_STARTUP_LOG_DIR";
 const STARTUP_PROBE_KEEP_ENV: &str = "DBX_KEEP_STARTUP_LOG";
 const WINDOWS_APP_DATA_DIR_NAME: &str = "com.dbx.app";
+const STARTUP_PROBE_MAX_RUN_EVENTS: usize = 80;
+static STARTUP_PROBE_RUN_EVENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "windows")]
 const WEBVIEW2_NO_SANDBOX_ENV: &str = "DBX_WEBVIEW2_NO_SANDBOX";
 #[cfg(target_os = "macos")]
@@ -277,6 +279,61 @@ fn startup_probe_windows_environment_summary() -> Option<String> {
     })
 }
 
+fn startup_probe_page_load_event_label(event: PageLoadEvent) -> &'static str {
+    match event {
+        PageLoadEvent::Started => "started",
+        PageLoadEvent::Finished => "finished",
+    }
+}
+
+fn startup_probe_run_event_label(event: &RunEvent) -> String {
+    match event {
+        RunEvent::Ready => "ready".to_string(),
+        RunEvent::Resumed => "resumed".to_string(),
+        RunEvent::MainEventsCleared => "main-events-cleared".to_string(),
+        RunEvent::Exit => "exit".to_string(),
+        RunEvent::ExitRequested { code, .. } => format!("exit-requested code={code:?}"),
+        RunEvent::WindowEvent { label, event, .. } => format!("window-event label={label} event={event:?}"),
+        RunEvent::WebviewEvent { label, event, .. } => format!("webview-event label={label} event={event:?}"),
+        #[cfg(target_os = "macos")]
+        RunEvent::Opened { urls } => format!("opened urls={}", urls.len()),
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { has_visible_windows, .. } => format!("reopen has_visible_windows={has_visible_windows}"),
+        #[cfg(desktop)]
+        RunEvent::MenuEvent(_) => "menu-event".to_string(),
+        _ => "other".to_string(),
+    }
+}
+
+fn should_log_startup_probe_run_event(event: &RunEvent, count: usize) -> bool {
+    matches!(
+        event,
+        RunEvent::Ready
+            | RunEvent::Resumed
+            | RunEvent::Exit
+            | RunEvent::ExitRequested { .. }
+            | RunEvent::WindowEvent { .. }
+            | RunEvent::WebviewEvent { .. }
+    ) || count <= STARTUP_PROBE_MAX_RUN_EVENTS
+}
+
+fn log_startup_probe_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &RunEvent) {
+    let count = STARTUP_PROBE_RUN_EVENT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if should_log_startup_probe_run_event(event, count) {
+        append_startup_probe(format!(
+            "run event #{count}: {}; {}",
+            startup_probe_run_event_label(event),
+            main_window_probe_state(app)
+        ));
+    } else if count == STARTUP_PROBE_MAX_RUN_EVENTS + 1 {
+        append_startup_probe(format!(
+            "run event logging capped after {} events; {}",
+            STARTUP_PROBE_MAX_RUN_EVENTS,
+            main_window_probe_state(app)
+        ));
+    }
+}
+
 fn ensure_startup_probe_parent_dir(path: &std::path::Path) -> bool {
     let Some(dir) = path.parent() else {
         return false;
@@ -288,6 +345,7 @@ fn ensure_startup_probe_parent_dir(path: &std::path::Path) -> bool {
 }
 
 fn reset_startup_probe() {
+    STARTUP_PROBE_RUN_EVENT_COUNT.store(0, Ordering::Relaxed);
     let Some(path) = startup_probe_log_path() else {
         return;
     };
@@ -325,6 +383,7 @@ fn install_startup_probe_panic_hook() {
 }
 
 pub(crate) fn clear_startup_probe_after_frontend_ready() {
+    append_startup_probe("frontend ready command received");
     if startup_probe_should_keep_after_frontend_ready() {
         append_startup_probe("frontend ready; keeping startup probe by request");
         return;
@@ -642,11 +701,21 @@ fn apply_linux_webkit_rendering_workarounds() {
 }
 
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    let Some(window) = app.get_webview_window("main") else {
+        append_startup_probe("show main window skipped: main_window=missing");
+        return;
+    };
+    append_startup_probe(format!("show main window requested; before {}", main_window_probe_state(app)));
+    let show_result = window.show().map(|_| "ok".to_string()).unwrap_or_else(|error| format!("error={error}"));
+    append_startup_probe(format!("main window show result: {show_result}; {}", main_window_probe_state(app)));
+    let unminimize_result =
+        window.unminimize().map(|_| "ok".to_string()).unwrap_or_else(|error| format!("error={error}"));
+    append_startup_probe(format!(
+        "main window unminimize result: {unminimize_result}; {}",
+        main_window_probe_state(app)
+    ));
+    let focus_result = window.set_focus().map(|_| "ok".to_string()).unwrap_or_else(|error| format!("error={error}"));
+    append_startup_probe(format!("main window focus result: {focus_result}; {}", main_window_probe_state(app)));
 }
 
 fn main_window_probe_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
@@ -654,23 +723,31 @@ fn main_window_probe_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Stri
         return "main_window=missing".to_string();
     };
     format!(
-        "main_window visible={:?} minimized={:?} maximized={:?} fullscreen={:?} position={:?} size={:?}",
+        "main_window visible={:?} focused={:?} minimized={:?} maximized={:?} fullscreen={:?} position={:?} outer_size={:?} inner_size={:?}",
         window.is_visible(),
+        window.is_focused(),
         window.is_minimized(),
         window.is_maximized(),
         window.is_fullscreen(),
         window.outer_position(),
-        window.outer_size()
+        window.outer_size(),
+        window.inner_size()
     )
 }
 
 fn prepare_main_window_for_display<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    append_startup_probe(format!("prepare main window for display; before {}", main_window_probe_state(app)));
     if let Some(decorations) = native_window_decorations_override(std::env::consts::OS) {
         if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_decorations(decorations);
+            let result =
+                window.set_decorations(decorations).map(|_| "ok".to_string()).unwrap_or_else(|e| format!("error={e}"));
+            append_startup_probe(format!("main window set_decorations result: {result}"));
+        } else {
+            append_startup_probe("main window set_decorations skipped: main_window=missing");
         }
     }
     window_state_guard::enforce_main_window_bounds(app);
+    append_startup_probe(format!("prepare main window for display finished; after {}", main_window_probe_state(app)));
 }
 
 fn clear_main_webview_focus<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -1508,16 +1585,30 @@ pub fn run() {
         .manage(CloseBehaviorState::new())
         .manage(AppLocaleState::new())
         .on_page_load(|webview, payload| {
+            append_startup_probe(format!(
+                "page load {} webview={} url_scheme={} url_path_len={}",
+                startup_probe_page_load_event_label(payload.event()),
+                webview.label(),
+                payload.url().scheme(),
+                payload.url().path().len()
+            ));
             if payload.event() == PageLoadEvent::Started {
                 if let Some(state) = webview.app_handle().try_state::<CloseBehaviorState>() {
                     state.set_frontend_ready(false);
+                    append_startup_probe("frontend ready state reset by page load start");
+                } else {
+                    append_startup_probe("frontend ready state reset skipped: close behavior state missing");
                 }
             }
         })
         .setup(move |app| {
             let setup_start = Instant::now();
             eprintln!("[STARTUP] plugins registered in {:?}", startup_begin.elapsed());
-            append_startup_probe(format!("setup entered after {:?}", startup_begin.elapsed()));
+            append_startup_probe(format!(
+                "setup entered after {:?}; {}",
+                startup_begin.elapsed(),
+                main_window_probe_state(app.handle())
+            ));
 
             if should_show_main_window_before_setup_tasks() {
                 prepare_main_window_for_display(app.handle());
@@ -1669,7 +1760,7 @@ pub fn run() {
             #[cfg(any(windows, target_os = "linux"))]
             let _ = app.deep_link().register_all();
 
-            append_startup_probe("setup finished");
+            append_startup_probe(format!("setup finished; {}", main_window_probe_state(app.handle())));
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2260,6 +2351,7 @@ pub fn run() {
     let app = match builder.build(tauri::generate_context!()) {
         Ok(app) => {
             append_startup_probe(format!("tauri application built after {:?}", startup_begin.elapsed()));
+            append_startup_probe(format!("post-build window probe: {}", main_window_probe_state(app.handle())));
             app
         }
         Err(error) => {
@@ -2269,6 +2361,8 @@ pub fn run() {
     };
     append_startup_probe("entering tauri event loop");
     app.run(|app_handle, event| {
+        log_startup_probe_run_event(app_handle, &event);
+
         #[cfg(not(target_os = "macos"))]
         let _ = (&app_handle, &event);
 
