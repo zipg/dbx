@@ -39,6 +39,7 @@ const STARTUP_PROBE_LOG_DIR_ENV: &str = "DBX_STARTUP_LOG_DIR";
 const STARTUP_PROBE_KEEP_ENV: &str = "DBX_KEEP_STARTUP_LOG";
 const WINDOWS_APP_DATA_DIR_NAME: &str = "com.dbx.app";
 const STARTUP_PROBE_MAX_RUN_EVENTS: usize = 80;
+const DIAGNOSTIC_STARTUP_PROBE_ALWAYS_KEEP: bool = true;
 static STARTUP_PROBE_STATE: Mutex<StartupProbeState> = Mutex::new(StartupProbeState::new());
 #[cfg(target_os = "windows")]
 const WEBVIEW2_NO_SANDBOX_ENV: &str = "DBX_WEBVIEW2_NO_SANDBOX";
@@ -569,6 +570,10 @@ fn install_startup_probe_panic_hook() {
 }
 
 pub(crate) fn clear_startup_probe_after_frontend_ready() {
+    if DIAGNOSTIC_STARTUP_PROBE_ALWAYS_KEEP {
+        append_startup_probe("diagnostic startup probe retained after frontend ready");
+        return;
+    }
     let mut state = STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     state.deactivate();
     if startup_probe_should_keep_after_frontend_ready() {
