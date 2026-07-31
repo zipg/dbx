@@ -634,20 +634,140 @@ fn startup_probe_run_event_count() -> usize {
     STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).run_event_count()
 }
 
+#[cfg(target_os = "windows")]
+fn windows_null_terminated(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn open_startup_probe_log_dir_in_explorer() {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let Some(dir) = startup_probe_log_dir() else {
+        append_startup_probe("diagnostic fallback skipped opening log directory: no log dir");
+        return;
+    };
+    let operation = windows_null_terminated("open");
+    let path = windows_null_terminated(&dir.to_string_lossy());
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            path.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    append_startup_probe(format!("diagnostic fallback open log directory result={result} dir={}", dir.display()));
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_startup_probe_log_dir_in_explorer() {}
+
+#[cfg(target_os = "windows")]
+fn show_startup_probe_native_message(reason: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND, MB_SYSTEMMODAL,
+    };
+
+    let log_path = startup_probe_log_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "(startup log path unavailable)".to_string());
+    let title = windows_null_terminated("DBX startup diagnostic");
+    let body = windows_null_terminated(&format!(
+        "DBX diagnostic package detected that the main window did not become available.\n\nReason: {reason}\n\nThe package already tried an isolated WebView2 profile, disabled GPU rendering, disabled WebView2 sandboxing, and enabled native window chrome.\n\nPlease send this file back to the DBX maintainer:\n{log_path}"
+    ));
+    let result = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_SYSTEMMODAL,
+        )
+    };
+    append_startup_probe(format!("diagnostic fallback native message result={result} reason={reason}"));
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_startup_probe_native_message(_reason: &str) {}
+
+fn request_main_window_rebuild<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
+    let app_for_schedule = app.clone();
+    let app_for_rebuild = app.clone();
+    let reason_for_log = reason.to_string();
+    let reason_for_rebuild = reason_for_log.clone();
+    let schedule_result = app_for_schedule.run_on_main_thread(move || {
+        if app_for_rebuild.get_webview_window("main").is_some() {
+            append_startup_probe(format!(
+                "diagnostic main window rebuild skipped: main exists reason={reason_for_rebuild}"
+            ));
+            show_main_window(&app_for_rebuild);
+            return;
+        }
+        let Some(config) = app_for_rebuild.config().app.windows.first().cloned() else {
+            append_startup_probe(format!(
+                "diagnostic main window rebuild skipped: missing config reason={reason_for_rebuild}"
+            ));
+            return;
+        };
+        let build_result =
+            tauri::WebviewWindowBuilder::from_config(&app_for_rebuild, &config).and_then(|builder| builder.build());
+        match build_result {
+            Ok(_) => {
+                append_startup_probe(format!("diagnostic main window rebuild succeeded reason={reason_for_rebuild}"));
+                show_main_window(&app_for_rebuild);
+            }
+            Err(error) => {
+                append_startup_probe(format!(
+                    "diagnostic main window rebuild failed reason={reason_for_rebuild} error={error}"
+                ));
+            }
+        }
+    });
+    match schedule_result {
+        Ok(()) => append_startup_probe(format!("diagnostic main window rebuild scheduled reason={reason_for_log}")),
+        Err(error) => append_startup_probe(format!(
+            "diagnostic main window rebuild schedule failed reason={reason_for_log} error={error}"
+        )),
+    }
+}
+
 fn start_startup_probe_watchdog<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let app = app.clone();
     std::thread::spawn(move || {
         let mut elapsed = 0_u64;
+        let mut fallback_shown = false;
+        let mut rebuild_requested = false;
         for delay in [3_u64, 10, 30, 60, 120] {
             std::thread::sleep(Duration::from_secs(delay));
             elapsed += delay;
             let count = startup_probe_run_event_count();
+            let main_exists = app.get_webview_window("main").is_some();
             append_startup_probe(format!(
-                "watchdog after {elapsed}s: run_event_count={count}; {}",
+                "watchdog after {elapsed}s: run_event_count={count} main_exists={}; {}",
+                startup_probe_bool(main_exists),
                 app_window_label_state(&app)
             ));
-            if count > 0 && app.get_webview_window("main").is_some() {
-                append_startup_probe("watchdog stopping: event loop and main window observed");
+            if main_exists {
+                show_main_window(&app);
+            } else if count > 0 && !rebuild_requested {
+                rebuild_requested = true;
+                request_main_window_rebuild(&app, "event-loop-running-main-window-missing");
+            }
+            if elapsed >= 13 && !fallback_shown && (!main_exists || count == 0) {
+                fallback_shown = true;
+                let reason = if count == 0 {
+                    "event-loop-produced-no-events"
+                } else {
+                    "main-window-missing-after-event-loop-start"
+                };
+                show_startup_probe_native_message(reason);
+                open_startup_probe_log_dir_in_explorer();
+            }
+            if count > 0 && main_exists {
+                append_startup_probe("watchdog stopping: event loop and main window observed; show requested");
                 return;
             }
         }
@@ -664,7 +784,8 @@ fn should_fallback_to_native_quit(target: &str, frontend_ready: bool) -> bool {
 
 fn native_window_decorations_override(target_os: &str) -> Option<bool> {
     match target_os {
-        "windows" | "linux" => Some(false),
+        "windows" => Some(true),
+        "linux" => Some(false),
         _ => None,
     }
 }
