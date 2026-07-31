@@ -13,8 +13,8 @@ use dbx_core::storage::{maybe_import_user_data_db, DesktopIconTheme, DesktopSett
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use tauri::menu::Menu;
@@ -39,7 +39,7 @@ const STARTUP_PROBE_LOG_DIR_ENV: &str = "DBX_STARTUP_LOG_DIR";
 const STARTUP_PROBE_KEEP_ENV: &str = "DBX_KEEP_STARTUP_LOG";
 const WINDOWS_APP_DATA_DIR_NAME: &str = "com.dbx.app";
 const STARTUP_PROBE_MAX_RUN_EVENTS: usize = 80;
-static STARTUP_PROBE_RUN_EVENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static STARTUP_PROBE_STATE: Mutex<StartupProbeState> = Mutex::new(StartupProbeState::new());
 #[cfg(target_os = "windows")]
 const WEBVIEW2_NO_SANDBOX_ENV: &str = "DBX_WEBVIEW2_NO_SANDBOX";
 #[cfg(target_os = "macos")]
@@ -50,6 +50,34 @@ const APP_MENU_COPY_SUPPORT_INFO_ID: &str = "app-menu-copy-support-info";
 pub struct CloseBehaviorState {
     confirmed_exit: AtomicBool,
     frontend_ready: AtomicBool,
+}
+
+struct StartupProbeState {
+    active: bool,
+    run_event_count: usize,
+}
+
+impl StartupProbeState {
+    const fn new() -> Self {
+        Self { active: false, run_event_count: 0 }
+    }
+
+    fn activate(&mut self) {
+        self.active = true;
+        self.run_event_count = 0;
+    }
+
+    fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    fn reserve_run_event(&mut self, max_events: usize) -> Option<(usize, bool)> {
+        if !self.active || self.run_event_count >= max_events {
+            return None;
+        }
+        self.run_event_count += 1;
+        Some((self.run_event_count, self.run_event_count == max_events))
+    }
 }
 
 impl CloseBehaviorState {
@@ -279,11 +307,167 @@ fn startup_probe_windows_environment_summary() -> Option<String> {
     })
 }
 
+#[cfg(target_os = "windows")]
+fn startup_probe_windows_user_object_name(handle: windows_sys::Win32::Foundation::HANDLE) -> String {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::StationsAndDesktops::{GetUserObjectInformationW, UOI_NAME};
+
+    if handle.is_null() {
+        return "null".to_string();
+    }
+
+    let mut needed = 0u32;
+    unsafe {
+        let _ = GetUserObjectInformationW(handle, UOI_NAME, std::ptr::null_mut(), 0, &mut needed);
+    }
+    if needed == 0 {
+        let error = unsafe { GetLastError() };
+        return format!("unavailable error={error}");
+    }
+
+    let mut buffer = vec![0u16; (needed as usize / std::mem::size_of::<u16>()) + 1];
+    let ok = unsafe {
+        GetUserObjectInformationW(
+            handle,
+            UOI_NAME,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * std::mem::size_of::<u16>()) as u32,
+            &mut needed,
+        )
+    };
+    if ok == 0 {
+        let error = unsafe { GetLastError() };
+        return format!("unavailable error={error}");
+    }
+
+    let len = buffer.iter().position(|ch| *ch == 0).unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..len])
+}
+
+#[cfg(target_os = "windows")]
+fn startup_probe_windows_process_elevation_summary() -> String {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return format!("token_elevated=unknown open_error={}", GetLastError());
+        }
+
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut returned = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        );
+        let close_result = CloseHandle(token);
+        if ok == 0 {
+            return format!(
+                "token_elevated=unknown query_error={} token_close={}",
+                GetLastError(),
+                startup_probe_bool(close_result != 0)
+            );
+        }
+
+        format!(
+            "token_elevated={} token_query_bytes={} token_close={}",
+            startup_probe_bool(elevation.TokenIsElevated != 0),
+            returned,
+            startup_probe_bool(close_result != 0)
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn startup_probe_windows_native_summary() -> Option<String> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::StationsAndDesktops::{GetProcessWindowStation, GetThreadDesktop};
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, GetCurrentThreadId, GetStartupInfoW, STARTF_USESHOWWINDOW, STARTUPINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CMONITORS, SM_REMOTESESSION};
+
+    let mut session_id = 0u32;
+    let pid = unsafe { GetCurrentProcessId() };
+    let session_result = unsafe { ProcessIdToSessionId(pid, &mut session_id) };
+    let session_text = if session_result != 0 {
+        session_id.to_string()
+    } else {
+        format!("unknown error={}", unsafe { GetLastError() })
+    };
+
+    let mut startup_info = STARTUPINFOW::default();
+    unsafe {
+        GetStartupInfoW(&mut startup_info);
+    }
+    let uses_show_window = (startup_info.dwFlags & STARTF_USESHOWWINDOW) != 0;
+    let window_station = unsafe { startup_probe_windows_user_object_name(GetProcessWindowStation()) };
+    let desktop = unsafe { startup_probe_windows_user_object_name(GetThreadDesktop(GetCurrentThreadId())) };
+    let console_present = unsafe { !GetConsoleWindow().is_null() };
+    let monitor_count = unsafe { GetSystemMetrics(SM_CMONITORS) };
+    let remote_session = unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 };
+
+    Some(format!(
+        "windows native: process_session={} window_station={} desktop={} monitor_count={} remote_session={} console_window_present={} startup_uses_show_window={} startup_show_window={} {}",
+        session_text,
+        window_station,
+        desktop,
+        monitor_count,
+        startup_probe_bool(remote_session),
+        startup_probe_bool(console_present),
+        startup_probe_bool(uses_show_window),
+        startup_info.wShowWindow,
+        startup_probe_windows_process_elevation_summary()
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn startup_probe_windows_native_summary() -> Option<String> {
+    None
+}
+
+fn startup_probe_webview_runtime_summary() -> String {
+    match tauri::webview_version() {
+        Ok(version) => format!("webview runtime version: {version}"),
+        Err(error) => format!("webview runtime version unavailable: {error}"),
+    }
+}
+
+fn app_config_window_labels<R: tauri::Runtime>(app: &tauri::App<R>) -> String {
+    let labels = app.config().app.windows.iter().map(|window| window.label.as_str()).collect::<Vec<_>>();
+    if labels.is_empty() {
+        "config_window_labels=[]".to_string()
+    } else {
+        format!("config_window_labels=[{}]", labels.join(","))
+    }
+}
+
+fn app_window_label_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
+    let mut webview_windows = app.webview_windows().keys().cloned().collect::<Vec<_>>();
+    webview_windows.sort();
+    format!("webview_window_labels=[{}]", webview_windows.join(","))
+}
+
 fn startup_probe_page_load_event_label(event: PageLoadEvent) -> &'static str {
     match event {
         PageLoadEvent::Started => "started",
         PageLoadEvent::Finished => "finished",
     }
+}
+
+fn startup_probe_window_event_label(_event: &tauri::WindowEvent) -> &'static str {
+    "window-event"
+}
+
+fn startup_probe_webview_event_label(_event: &tauri::WebviewEvent) -> &'static str {
+    "webview-event"
 }
 
 fn startup_probe_run_event_label(event: &RunEvent) -> String {
@@ -293,8 +477,8 @@ fn startup_probe_run_event_label(event: &RunEvent) -> String {
         RunEvent::MainEventsCleared => "main-events-cleared".to_string(),
         RunEvent::Exit => "exit".to_string(),
         RunEvent::ExitRequested { code, .. } => format!("exit-requested code={code:?}"),
-        RunEvent::WindowEvent { label, event, .. } => format!("window-event label={label} event={event:?}"),
-        RunEvent::WebviewEvent { label, event, .. } => format!("webview-event label={label} event={event:?}"),
+        RunEvent::WindowEvent { event, .. } => startup_probe_window_event_label(event).to_string(),
+        RunEvent::WebviewEvent { event, .. } => startup_probe_webview_event_label(event).to_string(),
         #[cfg(target_os = "macos")]
         RunEvent::Opened { urls } => format!("opened urls={}", urls.len()),
         #[cfg(target_os = "macos")]
@@ -305,33 +489,20 @@ fn startup_probe_run_event_label(event: &RunEvent) -> String {
     }
 }
 
-fn should_log_startup_probe_run_event(event: &RunEvent, count: usize) -> bool {
-    matches!(
-        event,
-        RunEvent::Ready
-            | RunEvent::Resumed
-            | RunEvent::Exit
-            | RunEvent::ExitRequested { .. }
-            | RunEvent::WindowEvent { .. }
-            | RunEvent::WebviewEvent { .. }
-    ) || count <= STARTUP_PROBE_MAX_RUN_EVENTS
-}
-
 fn log_startup_probe_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &RunEvent) {
-    let count = STARTUP_PROBE_RUN_EVENT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if should_log_startup_probe_run_event(event, count) {
-        append_startup_probe(format!(
-            "run event #{count}: {}; {}",
-            startup_probe_run_event_label(event),
-            main_window_probe_state(app)
-        ));
-    } else if count == STARTUP_PROBE_MAX_RUN_EVENTS + 1 {
-        append_startup_probe(format!(
-            "run event logging capped after {} events; {}",
-            STARTUP_PROBE_MAX_RUN_EVENTS,
-            main_window_probe_state(app)
-        ));
-    }
+    let Some((count, reached_cap)) = STARTUP_PROBE_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .reserve_run_event(STARTUP_PROBE_MAX_RUN_EVENTS)
+    else {
+        return;
+    };
+    let cap_message = if reached_cap { "; further run events omitted" } else { "" };
+    append_startup_probe(format!(
+        "run event #{count}: {}; {}{cap_message}",
+        startup_probe_run_event_label(event),
+        main_window_probe_state(app)
+    ));
 }
 
 fn ensure_startup_probe_parent_dir(path: &std::path::Path) -> bool {
@@ -345,7 +516,8 @@ fn ensure_startup_probe_parent_dir(path: &std::path::Path) -> bool {
 }
 
 fn reset_startup_probe() {
-    STARTUP_PROBE_RUN_EVENT_COUNT.store(0, Ordering::Relaxed);
+    let mut state = STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.activate();
     let Some(path) = startup_probe_log_path() else {
         return;
     };
@@ -356,6 +528,10 @@ fn reset_startup_probe() {
 }
 
 fn append_startup_probe(message: impl AsRef<str>) {
+    let state = STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !state.active {
+        return;
+    }
     let Some(path) = startup_probe_log_path() else {
         return;
     };
@@ -377,15 +553,19 @@ fn append_startup_probe(message: impl AsRef<str>) {
 fn install_startup_probe_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        append_startup_probe(format!("panic before frontend ready: {info}"));
+        let location = info
+            .location()
+            .map(|location| format!(" line={} column={}", location.line(), location.column()))
+            .unwrap_or_default();
+        append_startup_probe(format!("panic before frontend ready{location}"));
         default_hook(info);
     }));
 }
 
 pub(crate) fn clear_startup_probe_after_frontend_ready() {
-    append_startup_probe("frontend ready command received");
+    let mut state = STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.deactivate();
     if startup_probe_should_keep_after_frontend_ready() {
-        append_startup_probe("frontend ready; keeping startup probe by request");
         return;
     }
     let Some(path) = startup_probe_log_path() else {
@@ -720,10 +900,10 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 fn main_window_probe_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     let Some(window) = app.get_webview_window("main") else {
-        return "main_window=missing".to_string();
+        return format!("main_window=missing; {}", app_window_label_state(app));
     };
     format!(
-        "main_window visible={:?} focused={:?} minimized={:?} maximized={:?} fullscreen={:?} position={:?} outer_size={:?} inner_size={:?}",
+        "main_window visible={:?} focused={:?} minimized={:?} maximized={:?} fullscreen={:?} position={:?} outer_size={:?} inner_size={:?}; {}",
         window.is_visible(),
         window.is_focused(),
         window.is_minimized(),
@@ -731,7 +911,8 @@ fn main_window_probe_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Stri
         window.is_fullscreen(),
         window.outer_position(),
         window.outer_size(),
-        window.inner_size()
+        window.inner_size(),
+        app_window_label_state(app)
     )
 }
 
@@ -1097,10 +1278,10 @@ mod tests {
         should_enable_single_instance, should_fallback_to_native_quit, should_hide_window_on_close,
         should_setup_desktop_tray, should_show_main_window_after_setup, should_show_main_window_before_setup_tasks,
         startup_probe_build_error_message, startup_probe_log_dir_from_inputs,
-        startup_probe_should_keep_after_frontend_ready_from_value,
-        startup_probe_windows_environment_summary_from_values, tray_menu_labels_for_locale,
-        uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver, StartupProbeWindowsEnvironmentInput,
-        WINDOWS_APP_DATA_DIR_NAME,
+        startup_probe_should_keep_after_frontend_ready_from_value, startup_probe_webview_event_label,
+        startup_probe_window_event_label, startup_probe_windows_environment_summary_from_values,
+        tray_menu_labels_for_locale, uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver,
+        StartupProbeState, StartupProbeWindowsEnvironmentInput, WINDOWS_APP_DATA_DIR_NAME,
     };
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
@@ -1249,6 +1430,41 @@ mod tests {
         assert!(!startup_probe_should_keep_after_frontend_ready_from_value(None));
         assert!(!startup_probe_should_keep_after_frontend_ready_from_value(Some("true")));
         assert!(!startup_probe_should_keep_after_frontend_ready_from_value(Some("0")));
+    }
+
+    #[test]
+    fn startup_probe_state_stops_reserving_events_after_frontend_ready() {
+        let mut state = StartupProbeState::new();
+        assert_eq!(state.reserve_run_event(3), None);
+        state.activate();
+        assert_eq!(state.reserve_run_event(3), Some((1, false)));
+        state.deactivate();
+        assert_eq!(state.reserve_run_event(3), None);
+    }
+
+    #[test]
+    fn startup_probe_run_event_cap_is_total() {
+        let mut state = StartupProbeState::new();
+        state.activate();
+        assert_eq!(state.reserve_run_event(3), Some((1, false)));
+        assert_eq!(state.reserve_run_event(3), Some((2, false)));
+        assert_eq!(state.reserve_run_event(3), Some((3, true)));
+        assert_eq!(state.reserve_run_event(3), None);
+    }
+
+    #[test]
+    fn startup_probe_drag_drop_events_do_not_log_paths() {
+        let window_event = tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
+            paths: vec![PathBuf::from(r"C:\Users\alice\secret.sql")],
+            position: tauri::PhysicalPosition::new(10.0, 20.0),
+        });
+        let webview_event = tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Enter {
+            paths: vec![PathBuf::from(r"C:\Users\alice\private.db")],
+            position: tauri::PhysicalPosition::new(30.0, 40.0),
+        });
+
+        assert_eq!(startup_probe_window_event_label(&window_event), "window-event");
+        assert_eq!(startup_probe_webview_event_label(&webview_event), "webview-event");
     }
 
     #[test]
@@ -1488,11 +1704,10 @@ pub fn run() {
     reset_startup_probe();
     install_startup_probe_panic_hook();
     append_startup_probe(format!(
-        "process start version={} os={} arch={} exe={:?}",
+        "process start version={} os={} arch={}",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
-        std::env::consts::ARCH,
-        std::env::current_exe()
+        std::env::consts::ARCH
     ));
     rustls::crypto::aws_lc_rs::default_provider().install_default().expect("Failed to install rustls crypto provider");
     configure_webview2_sandbox_compat();
@@ -1500,6 +1715,10 @@ pub fn run() {
     if let Some(summary) = startup_probe_windows_environment_summary() {
         append_startup_probe(summary);
     }
+    if let Some(summary) = startup_probe_windows_native_summary() {
+        append_startup_probe(summary);
+    }
+    append_startup_probe(startup_probe_webview_runtime_summary());
     #[cfg(target_os = "linux")]
     apply_linux_webkit_rendering_workarounds();
 
@@ -1625,7 +1844,7 @@ pub fn run() {
             let data_dir_resolution = data_dir::resolve_data_dir_with_mode(default_data_dir);
             let data_dir = data_dir_resolution.data_dir.clone();
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
-            append_startup_probe(format!("data dir ready: {}", data_dir.display()));
+            append_startup_probe("data dir ready");
             let alternative_data_dir = data_dir::alternative_data_dir(&data_dir_resolution);
             match maybe_import_user_data_db(&data_dir, alternative_data_dir.as_deref()) {
                 Ok(result) => eprintln!("[STARTUP] data db fallback import: {result:?}"),
@@ -1634,7 +1853,7 @@ pub fn run() {
             let db_path = data_dir.join("dbx.db");
 
             let t = Instant::now();
-            append_startup_probe(format!("opening storage: {}", db_path.display()));
+            append_startup_probe("opening storage");
             let storage = tauri::async_runtime::block_on(async {
                 let s = Storage::open(&db_path).await.expect("Failed to open storage");
                 eprintln!("[STARTUP]   Storage::open in {:?}", t.elapsed());
@@ -2351,6 +2570,7 @@ pub fn run() {
     let app = match builder.build(tauri::generate_context!()) {
         Ok(app) => {
             append_startup_probe(format!("tauri application built after {:?}", startup_begin.elapsed()));
+            append_startup_probe(app_config_window_labels(&app));
             append_startup_probe(format!("post-build window probe: {}", main_window_probe_state(app.handle())));
             app
         }
