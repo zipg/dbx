@@ -1,0 +1,82 @@
+name: Windows Enterprise Compatibility Test
+
+on:
+  push:
+    branches:
+      - codex/windows-enterprise-compat-test
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  win64-installer:
+    name: Build Windows x64 installer
+    runs-on: windows-2022
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+          shared-key: enterprise-compat-win64-x86_64-pc-windows-msvc
+          cache-on-failure: true
+
+      - name: Build Windows x64 NSIS installer
+        run: >-
+          pnpm tauri build
+          --target x86_64-pc-windows-msvc
+          --bundles nsis
+          --config src-tauri/tauri.enterprise-compat-test.conf.json
+
+      - name: Prepare installer artifact
+        shell: pwsh
+        run: |
+          $bundleDir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem $bundleDir -Filter "*.exe" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (!$installer) {
+            Write-Error "Missing NSIS installer in $bundleDir"
+            exit 1
+          }
+
+          $artifactDir = "windows-enterprise-compat-test"
+          $cargoMetadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($cargoMetadata.packages | Where-Object { $_.name -eq "dbx" } | Select-Object -First 1).version
+          if (!$version) {
+            Write-Error "Unable to resolve DBX package version"
+            exit 1
+          }
+          $artifactName = "DBX_${version}_x64-enterprise-compat-test-setup.exe"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          Copy-Item $installer.FullName (Join-Path $artifactDir $artifactName) -Force
+          Get-FileHash -LiteralPath (Join-Path $artifactDir $artifactName) -Algorithm SHA256 |
+            ForEach-Object { $_.Hash.ToLowerInvariant() } |
+            Set-Content -Path (Join-Path $artifactDir "$artifactName.sha256") -Encoding utf8NoBOM
+
+      - name: Upload Windows x64 installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: DBX-win64-enterprise-compat-test-installer
+          path: windows-enterprise-compat-test/*
+          if-no-files-found: error
