@@ -37,10 +37,13 @@ const APP_CLOSE_REQUESTED_EVENT: &str = "dbx-app-close-requested";
 const STARTUP_PROBE_LOG_FILE: &str = "startup.log";
 const STARTUP_PROBE_LOG_DIR_ENV: &str = "DBX_STARTUP_LOG_DIR";
 const STARTUP_PROBE_KEEP_ENV: &str = "DBX_KEEP_STARTUP_LOG";
+const DIAGNOSTIC_MODE_INDEX_ENV: &str = "DBX_DIAGNOSTIC_MODE_INDEX";
 const WINDOWS_APP_DATA_DIR_NAME: &str = "com.dbx.app";
 const STARTUP_PROBE_MAX_RUN_EVENTS: usize = 80;
 const DIAGNOSTIC_STARTUP_PROBE_ALWAYS_KEEP: bool = true;
 static STARTUP_PROBE_STATE: Mutex<StartupProbeState> = Mutex::new(StartupProbeState::new());
+#[cfg(target_os = "windows")]
+static DIAGNOSTIC_SUCCESS_MESSAGE_SHOWN: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 const WEBVIEW2_NO_SANDBOX_ENV: &str = "DBX_WEBVIEW2_NO_SANDBOX";
 #[cfg(target_os = "windows")]
@@ -157,7 +160,143 @@ fn should_setup_desktop_tray(target_os: &str, show_tray_icon: bool, linux_appind
 }
 
 fn should_enable_single_instance(debug_build: bool) -> bool {
-    !debug_build
+    !debug_build && !diagnostic_startup_mode_enabled()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DiagnosticStartupMode {
+    key: &'static str,
+    description: &'static str,
+    isolated_webview_profile: bool,
+    disable_gpu: bool,
+    disable_renderer_code_integrity: bool,
+    no_sandbox: bool,
+    native_decorations: Option<bool>,
+}
+
+const DIAGNOSTIC_STARTUP_MODES: &[DiagnosticStartupMode] = &[
+    DiagnosticStartupMode {
+        key: "default-native",
+        description: "default WebView2 environment with native window chrome",
+        isolated_webview_profile: false,
+        disable_gpu: false,
+        disable_renderer_code_integrity: false,
+        no_sandbox: false,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "isolated-profile-native",
+        description: "isolated WebView2 profile with native window chrome",
+        isolated_webview_profile: true,
+        disable_gpu: false,
+        disable_renderer_code_integrity: false,
+        no_sandbox: false,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "isolated-profile-disable-gpu-native",
+        description: "isolated WebView2 profile and disabled GPU rendering",
+        isolated_webview_profile: true,
+        disable_gpu: true,
+        disable_renderer_code_integrity: false,
+        no_sandbox: false,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "isolated-profile-renderer-code-integrity-native",
+        description: "isolated WebView2 profile, disabled GPU rendering, and disabled RendererCodeIntegrity",
+        isolated_webview_profile: true,
+        disable_gpu: true,
+        disable_renderer_code_integrity: true,
+        no_sandbox: false,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "isolated-profile-no-sandbox-native",
+        description: "isolated WebView2 profile and disabled WebView2 sandbox",
+        isolated_webview_profile: true,
+        disable_gpu: false,
+        disable_renderer_code_integrity: false,
+        no_sandbox: true,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "isolated-profile-all-webview-compat-native",
+        description: "isolated WebView2 profile with GPU, RendererCodeIntegrity, and sandbox disabled",
+        isolated_webview_profile: true,
+        disable_gpu: true,
+        disable_renderer_code_integrity: true,
+        no_sandbox: true,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "default-profile-disable-gpu-native",
+        description: "default WebView2 profile and disabled GPU rendering",
+        isolated_webview_profile: false,
+        disable_gpu: true,
+        disable_renderer_code_integrity: false,
+        no_sandbox: false,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "default-profile-all-webview-compat-native",
+        description: "default WebView2 profile with GPU, RendererCodeIntegrity, and sandbox disabled",
+        isolated_webview_profile: false,
+        disable_gpu: true,
+        disable_renderer_code_integrity: true,
+        no_sandbox: true,
+        native_decorations: Some(true),
+    },
+    DiagnosticStartupMode {
+        key: "isolated-profile-all-webview-compat-frameless",
+        description: "isolated WebView2 profile with all WebView2 compatibility switches and non-native window chrome",
+        isolated_webview_profile: true,
+        disable_gpu: true,
+        disable_renderer_code_integrity: true,
+        no_sandbox: true,
+        native_decorations: Some(false),
+    },
+];
+
+fn diagnostic_startup_mode_index_from_value(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|index| *index < DIAGNOSTIC_STARTUP_MODES.len())
+        .unwrap_or(0)
+}
+
+fn diagnostic_startup_mode_index() -> usize {
+    diagnostic_startup_mode_index_from_value(std::env::var(DIAGNOSTIC_MODE_INDEX_ENV).ok().as_deref())
+}
+
+fn diagnostic_startup_mode() -> (usize, &'static DiagnosticStartupMode) {
+    let index = diagnostic_startup_mode_index();
+    (index, &DIAGNOSTIC_STARTUP_MODES[index])
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn diagnostic_startup_next_mode_index(index: usize) -> Option<usize> {
+    (index + 1 < DIAGNOSTIC_STARTUP_MODES.len()).then_some(index + 1)
+}
+
+fn diagnostic_startup_mode_enabled() -> bool {
+    DIAGNOSTIC_STARTUP_PROBE_ALWAYS_KEEP
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn diagnostic_startup_mode_summary(index: usize, mode: &DiagnosticStartupMode) -> String {
+    format!(
+        "diagnostic mode {}/{} key={} description=\"{}\" isolated_webview_profile={} disable_gpu={} disable_renderer_code_integrity={} no_sandbox={} native_decorations={:?}",
+        index + 1,
+        DIAGNOSTIC_STARTUP_MODES.len(),
+        mode.key,
+        mode.description,
+        startup_probe_bool(mode.isolated_webview_profile),
+        startup_probe_bool(mode.disable_gpu),
+        startup_probe_bool(mode.disable_renderer_code_integrity),
+        startup_probe_bool(mode.no_sandbox),
+        mode.native_decorations
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -525,6 +664,9 @@ fn ensure_startup_probe_parent_dir(path: &std::path::Path) -> bool {
 fn reset_startup_probe() {
     let mut state = STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     state.activate();
+    if diagnostic_startup_mode_index() > 0 {
+        return;
+    }
     let Some(path) = startup_probe_log_path() else {
         return;
     };
@@ -572,6 +714,7 @@ fn install_startup_probe_panic_hook() {
 pub(crate) fn clear_startup_probe_after_frontend_ready() {
     if DIAGNOSTIC_STARTUP_PROBE_ALWAYS_KEEP {
         append_startup_probe("diagnostic startup probe retained after frontend ready");
+        show_diagnostic_startup_success_message();
         return;
     }
     let mut state = STARTUP_PROBE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -601,28 +744,46 @@ fn append_webview2_browser_argument(argument: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn configure_webview2_sandbox_compat() {
+    let (index, mode) = diagnostic_startup_mode();
+    let original_args_present =
+        std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_some_and(|value| !value.is_empty());
+    let original_user_data_present =
+        std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some_and(|value| !value.is_empty());
+    let original_no_sandbox_present = std::env::var_os(WEBVIEW2_NO_SANDBOX_ENV).is_some_and(|value| !value.is_empty());
+    std::env::remove_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
+    std::env::remove_var("WEBVIEW2_USER_DATA_FOLDER");
+    std::env::remove_var(WEBVIEW2_NO_SANDBOX_ENV);
+
+    append_startup_probe(diagnostic_startup_mode_summary(index, mode));
+    append_startup_probe(format!(
+        "diagnostic original WebView2 env: additional_args_present={} user_data_folder_present={} dbx_webview2_no_sandbox_present={}",
+        startup_probe_bool(original_args_present),
+        startup_probe_bool(original_user_data_present),
+        startup_probe_bool(original_no_sandbox_present)
+    ));
+
     let mut applied = Vec::new();
 
-    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").filter(|value| !value.is_empty()).is_none() {
+    if mode.isolated_webview_profile {
         if let Some(dir) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()).map(PathBuf::from) {
-            let user_data_dir = dir.join(WINDOWS_APP_DATA_DIR_NAME).join(WEBVIEW2_DIAGNOSTIC_USER_DATA_DIR_NAME);
+            let user_data_dir =
+                dir.join(WINDOWS_APP_DATA_DIR_NAME).join(WEBVIEW2_DIAGNOSTIC_USER_DATA_DIR_NAME).join(mode.key);
             let _ = std::fs::create_dir_all(&user_data_dir);
             std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &user_data_dir);
             applied.push(format!("user_data_folder={}", user_data_dir.display()));
         }
     }
 
-    if append_webview2_browser_argument("--disable-gpu") {
+    if mode.disable_gpu && append_webview2_browser_argument("--disable-gpu") {
         applied.push("--disable-gpu".to_string());
     }
-    if append_webview2_browser_argument("--disable-features=RendererCodeIntegrity") {
+    if mode.disable_renderer_code_integrity
+        && append_webview2_browser_argument("--disable-features=RendererCodeIntegrity")
+    {
         applied.push("--disable-features=RendererCodeIntegrity".to_string());
     }
-    if append_webview2_browser_argument("--no-sandbox") {
+    if mode.no_sandbox && append_webview2_browser_argument("--no-sandbox") {
         applied.push("--no-sandbox".to_string());
-    }
-    if matches!(std::env::var(WEBVIEW2_NO_SANDBOX_ENV).as_deref(), Ok("1")) {
-        applied.push("legacy_no_sandbox_env=1".to_string());
     }
 
     if applied.is_empty() {
@@ -677,12 +838,16 @@ fn show_startup_probe_native_message(reason: &str) {
         MessageBoxW, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND, MB_SYSTEMMODAL,
     };
 
+    let (index, mode) = diagnostic_startup_mode();
     let log_path = startup_probe_log_path()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "(startup log path unavailable)".to_string());
     let title = windows_null_terminated("DBX startup diagnostic");
     let body = windows_null_terminated(&format!(
-        "DBX diagnostic package detected that the main window did not become available.\n\nReason: {reason}\n\nThe package already tried an isolated WebView2 profile, disabled GPU rendering, disabled WebView2 sandboxing, and enabled native window chrome.\n\nPlease send this file back to the DBX maintainer:\n{log_path}"
+        "DBX diagnostic package tried every startup mode and the main window still did not become available.\n\nLast mode: {}/{} ({})\nReason: {reason}\n\nPlease send this file back to the DBX maintainer:\n{log_path}",
+        index + 1,
+        DIAGNOSTIC_STARTUP_MODES.len(),
+        mode.key
     ));
     let result = unsafe {
         MessageBoxW(
@@ -697,6 +862,87 @@ fn show_startup_probe_native_message(reason: &str) {
 
 #[cfg(not(target_os = "windows"))]
 fn show_startup_probe_native_message(_reason: &str) {}
+
+#[cfg(target_os = "windows")]
+fn show_diagnostic_startup_success_message() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND};
+
+    if DIAGNOSTIC_SUCCESS_MESSAGE_SHOWN.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let (index, mode) = diagnostic_startup_mode();
+    let log_path = startup_probe_log_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "(startup log path unavailable)".to_string());
+    let title = windows_null_terminated("DBX startup diagnostic");
+    let body = windows_null_terminated(&format!(
+        "DBX diagnostic package opened the main window successfully.\n\nSuccessful mode: {}/{} ({})\n{}\n\nPlease send this startup log back to the DBX maintainer:\n{log_path}",
+        index + 1,
+        DIAGNOSTIC_STARTUP_MODES.len(),
+        mode.key,
+        mode.description
+    ));
+    let result = unsafe {
+        MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND)
+    };
+    append_startup_probe(format!(
+        "diagnostic success native message result={result} mode_index={} mode_key={}",
+        index, mode.key
+    ));
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_diagnostic_startup_success_message() {}
+
+#[cfg(target_os = "windows")]
+fn restart_with_next_diagnostic_mode(reason: &str) -> bool {
+    let current_index = diagnostic_startup_mode_index();
+    let Some(next_index) = diagnostic_startup_next_mode_index(current_index) else {
+        append_startup_probe(format!(
+            "diagnostic no next startup mode after mode_index={current_index} reason={reason}"
+        ));
+        return false;
+    };
+    let Some(next_mode) = DIAGNOSTIC_STARTUP_MODES.get(next_index) else {
+        append_startup_probe(format!("diagnostic next startup mode missing index={next_index} reason={reason}"));
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        append_startup_probe(format!("diagnostic restart failed: current_exe unavailable reason={reason}"));
+        return false;
+    };
+
+    append_startup_probe(format!(
+        "diagnostic restarting with next startup mode {}/{} key={} after reason={reason}",
+        next_index + 1,
+        DIAGNOSTIC_STARTUP_MODES.len(),
+        next_mode.key
+    ));
+    let spawn_result = std::process::Command::new(exe)
+        .env(DIAGNOSTIC_MODE_INDEX_ENV, next_index.to_string())
+        .env_remove("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
+        .env_remove("WEBVIEW2_USER_DATA_FOLDER")
+        .env_remove(WEBVIEW2_NO_SANDBOX_ENV)
+        .spawn();
+    match spawn_result {
+        Ok(child) => {
+            append_startup_probe(format!("diagnostic next startup mode spawned pid={}", child.id()));
+            true
+        }
+        Err(error) => {
+            append_startup_probe(format!(
+                "diagnostic next startup mode spawn failed index={next_index} key={} error={error}",
+                next_mode.key
+            ));
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn restart_with_next_diagnostic_mode(_reason: &str) -> bool {
+    false
+}
 
 fn request_main_window_rebuild<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
     let app_for_schedule = app.clone();
@@ -768,8 +1014,17 @@ fn start_startup_probe_watchdog<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
                 } else {
                     "main-window-missing-after-event-loop-start"
                 };
-                show_startup_probe_native_message(reason);
-                open_startup_probe_log_dir_in_explorer();
+                append_startup_probe(format!(
+                    "diagnostic startup mode failed mode_index={} reason={reason}",
+                    diagnostic_startup_mode_index()
+                ));
+                if restart_with_next_diagnostic_mode(reason) {
+                    append_startup_probe("diagnostic current process exiting after spawning next startup mode");
+                    std::process::exit(0);
+                } else {
+                    show_startup_probe_native_message(reason);
+                    open_startup_probe_log_dir_in_explorer();
+                }
             }
             if count > 0 && main_exists {
                 append_startup_probe("watchdog stopping: event loop and main window observed; show requested");
@@ -789,7 +1044,7 @@ fn should_fallback_to_native_quit(target: &str, frontend_ready: bool) -> bool {
 
 fn native_window_decorations_override(target_os: &str) -> Option<bool> {
     match target_os {
-        "windows" => Some(true),
+        "windows" => diagnostic_startup_mode().1.native_decorations,
         "linux" => Some(false),
         _ => None,
     }
@@ -1459,7 +1714,8 @@ pub(crate) fn apply_desktop_settings(app: &tauri::AppHandle, desktop_settings: &
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        app_menu_copy_support_info_label, app_menu_quit_label, linux_appimage_system_gtk_immodules_cache,
+        app_menu_copy_support_info_label, app_menu_quit_label, diagnostic_startup_mode_index_from_value,
+        diagnostic_startup_next_mode_index, linux_appimage_system_gtk_immodules_cache,
         linux_appimage_wayland_backend_override, linux_nvidia_driver_from_state, linux_selected_drm_render_device,
         linux_webkit_rendering_workarounds, native_window_decorations_override, should_confirm_app_exit_request,
         should_enable_single_instance, should_fallback_to_native_quit, should_hide_window_on_close,
@@ -1468,7 +1724,7 @@ mod tests {
         startup_probe_should_keep_after_frontend_ready_from_value, startup_probe_webview_event_label,
         startup_probe_window_event_label, startup_probe_windows_environment_summary_from_values,
         tray_menu_labels_for_locale, uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver,
-        StartupProbeState, StartupProbeWindowsEnvironmentInput, WINDOWS_APP_DATA_DIR_NAME,
+        StartupProbeState, StartupProbeWindowsEnvironmentInput, DIAGNOSTIC_STARTUP_MODES, WINDOWS_APP_DATA_DIR_NAME,
     };
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
@@ -1532,9 +1788,35 @@ mod tests {
     }
 
     #[test]
-    fn keeps_single_instance_for_release_builds_only() {
+    fn diagnostic_build_skips_single_instance_for_auto_restart() {
         assert!(!should_enable_single_instance(true));
-        assert!(should_enable_single_instance(false));
+        assert!(!should_enable_single_instance(false));
+    }
+
+    #[test]
+    fn parses_diagnostic_startup_mode_index_safely() {
+        assert_eq!(diagnostic_startup_mode_index_from_value(None), 0);
+        assert_eq!(diagnostic_startup_mode_index_from_value(Some("0")), 0);
+        assert_eq!(diagnostic_startup_mode_index_from_value(Some("2")), 2);
+        assert_eq!(diagnostic_startup_mode_index_from_value(Some("999")), 0);
+        assert_eq!(diagnostic_startup_mode_index_from_value(Some("bad")), 0);
+    }
+
+    #[test]
+    fn diagnostic_startup_modes_cover_expected_webview_variants() {
+        assert!(DIAGNOSTIC_STARTUP_MODES.len() >= 8);
+        assert!(DIAGNOSTIC_STARTUP_MODES.iter().any(|mode| !mode.isolated_webview_profile
+            && !mode.disable_gpu
+            && !mode.disable_renderer_code_integrity
+            && !mode.no_sandbox));
+        assert!(DIAGNOSTIC_STARTUP_MODES.iter().any(|mode| mode.isolated_webview_profile
+            && mode.disable_gpu
+            && mode.disable_renderer_code_integrity
+            && mode.no_sandbox
+            && mode.native_decorations == Some(true)));
+        assert!(DIAGNOSTIC_STARTUP_MODES.iter().any(|mode| mode.native_decorations == Some(false)));
+        assert_eq!(diagnostic_startup_next_mode_index(0), Some(1));
+        assert_eq!(diagnostic_startup_next_mode_index(DIAGNOSTIC_STARTUP_MODES.len() - 1), None);
     }
 
     #[cfg(target_os = "macos")]
