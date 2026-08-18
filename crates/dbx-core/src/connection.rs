@@ -182,6 +182,7 @@ macro_rules! agent_connection_pool_database_type {
             | DatabaseType::Cassandra
             | DatabaseType::Bigquery
             | DatabaseType::Kylin
+            | DatabaseType::Ignite
             | DatabaseType::Sundb
             | DatabaseType::Oscar
             | DatabaseType::Tdengine

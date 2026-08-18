@@ -63,6 +63,7 @@ export type DatabaseType =
   | "cassandra"
   | "bigquery"
   | "kylin"
+  | "ignite"
   | "sundb"
   | "oscar"
   | "tdengine"
