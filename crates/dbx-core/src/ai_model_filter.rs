@@ -1,4 +1,4 @@
-use crate::ai::{AiApiStyle, AiModelInfo, AiProvider};
+use crate::ai::{AiModelInfo, AiProvider};
 use serde_json::Value;
 
 // Provider model-family exclusions last checked against official catalogs on 2026-07-27.
@@ -93,7 +93,6 @@ pub(crate) fn model_is_assistant_compatible(provider: &AiProvider, model_id: &st
         | AiProvider::Deepseek
         | AiProvider::Ollama
         | AiProvider::OpenaiCompatible
-        | AiProvider::OrcaRouter
         | AiProvider::CodexCli
         | AiProvider::ClaudeCodeCli
         | AiProvider::PiAgentCli
@@ -131,21 +130,6 @@ pub(crate) fn gemini_item_is_assistant_compatible(item: &Value) -> bool {
     })
 }
 
-pub(crate) fn orcarouter_item_supports_api_style(item: &Value, api_style: &AiApiStyle) -> bool {
-    let required_endpoint_type = match api_style {
-        AiApiStyle::Completions => "openai",
-        AiApiStyle::Responses => "openai-response",
-        AiApiStyle::AnthropicMessages => return false,
-    };
-
-    item["supported_endpoint_types"].as_array().is_some_and(|endpoint_types| {
-        endpoint_types
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|endpoint_type| endpoint_type.eq_ignore_ascii_case(required_endpoint_type))
-    })
-}
-
 fn ollama_capability(data: &Value, expected: &str) -> Option<bool> {
     let capabilities = data["capabilities"].as_array()?;
     if capabilities.is_empty() {
@@ -166,9 +150,9 @@ pub(crate) fn ollama_tool_capability(data: &Value) -> Option<bool> {
 mod tests {
     use super::{
         gemini_item_is_assistant_compatible, model_is_assistant_compatible, ollama_completion_capability,
-        ollama_tool_capability, orcarouter_item_supports_api_style,
+        ollama_tool_capability,
     };
-    use crate::ai::{AiApiStyle, AiProvider};
+    use crate::ai::AiProvider;
 
     #[test]
     fn openai_filter_keeps_assistant_models_and_hides_specialized_endpoints() {
@@ -266,24 +250,6 @@ mod tests {
         assert!(gemini_item_is_assistant_compatible(&serde_json::json!({
             "name": "models/future-chat-model"
         })));
-    }
-
-    #[test]
-    fn orcarouter_filter_matches_configured_openai_api_style() {
-        let chat_model = serde_json::json!({
-            "id": "orcarouter/fusion-flash",
-            "supported_endpoint_types": ["openai", "openai-response"]
-        });
-        assert!(orcarouter_item_supports_api_style(&chat_model, &AiApiStyle::Completions));
-        assert!(orcarouter_item_supports_api_style(&chat_model, &AiApiStyle::Responses));
-        assert!(!orcarouter_item_supports_api_style(&chat_model, &AiApiStyle::AnthropicMessages));
-
-        for endpoint_type in ["embeddings", "image-generation", "openai-video"] {
-            let specialized_model = serde_json::json!({ "supported_endpoint_types": [endpoint_type] });
-            assert!(!orcarouter_item_supports_api_style(&specialized_model, &AiApiStyle::Completions));
-            assert!(!orcarouter_item_supports_api_style(&specialized_model, &AiApiStyle::Responses));
-        }
-        assert!(!orcarouter_item_supports_api_style(&serde_json::json!({}), &AiApiStyle::Completions));
     }
 
     #[test]

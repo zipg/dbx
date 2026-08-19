@@ -79,10 +79,7 @@ pub fn static_effort_capability(config: &AiConfig, model_id: &str) -> Option<AiE
         AiProvider::Ollama => ollama_capability(&model, source),
         AiProvider::MiniMax if matches_family(&model, "minimax-m3") => Some(boolean_capability(source)),
         AiProvider::MiniMax => None,
-        AiProvider::AnthropicCompatible
-        | AiProvider::OpenaiCompatible
-        | AiProvider::OrcaRouter
-        | AiProvider::Custom => {
+        AiProvider::AnthropicCompatible | AiProvider::OpenaiCompatible | AiProvider::Custom => {
             Some(AiEffortCapability::FreeText { placeholder: None, source: AiCapabilitySource::Custom })
         }
         AiProvider::Claude
@@ -195,7 +192,6 @@ pub fn registry_source_url(provider: &AiProvider) -> Option<&'static str> {
         AiProvider::Claude
         | AiProvider::AnthropicCompatible
         | AiProvider::OpenaiCompatible
-        | AiProvider::OrcaRouter
         | AiProvider::CodexCli
         | AiProvider::ClaudeCodeCli
         | AiProvider::PiAgentCli
@@ -271,9 +267,7 @@ pub fn apply_runtime_effort(body: &mut Value, config: &AiConfig) {
         AiProvider::Qwen => apply_qwen_effort(object, selection),
         AiProvider::Ollama => apply_openai_effort(object, &config.api_style, selection),
         AiProvider::MiniMax => apply_minimax_effort(object, selection),
-        AiProvider::Openai | AiProvider::OpenaiCompatible | AiProvider::OrcaRouter => {
-            apply_openai_effort(object, &config.api_style, selection)
-        }
+        AiProvider::Openai | AiProvider::OpenaiCompatible => apply_openai_effort(object, &config.api_style, selection),
         AiProvider::Custom => {
             if config.api_style == AiApiStyle::AnthropicMessages {
                 apply_claude_effort(object, selection);
