@@ -1,4 +1,4 @@
-name: Windows Diagnostic Build
+name: Windows Test Installer
 
 on:
   workflow_dispatch:
@@ -6,13 +6,13 @@ on:
       target_ref:
         description: "Branch, tag, or SHA to build"
         required: true
-        default: "codex/windows-startup-diagnostics"
+        default: "codex/fix-mysql-jdbc-tls"
 
 permissions:
   contents: read
 
 jobs:
-  build-windows-portable:
+  build-windows-installer:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -35,24 +35,31 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Build Windows executable
+      - name: Build Windows NSIS installer
         env:
           CXXFLAGS: /std:c++17 /EHsc
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --no-bundle --ci
-
-      - name: Package diagnostic portable ZIP
         shell: pwsh
         run: |
-          $portableDir = "diagnostic-portable\DBX-diagnostic-x64"
-          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
-          Copy-Item "target\x86_64-pc-windows-msvc\release\dbx.exe" (Join-Path $portableDir "DBX.exe") -Force
-          Copy-Item "LICENSE" (Join-Path $portableDir "LICENSE") -Force
-          Copy-Item "README.md" (Join-Path $portableDir "README.md") -Force
-          Set-Content -Path (Join-Path $portableDir "portable.dbx") -Value "" -NoNewline
-          Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath "DBX-diagnostic-x64-portable.zip" -Force
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri-test-installer.json"
+          Set-Content -Path $configPath -Value '{"bundle":{"createUpdaterArtifacts":false}}' -Encoding utf8
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config $configPath --ci
 
-      - name: Upload diagnostic artifact
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "target\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter "*.exe" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (!$installer) {
+            Write-Error "Windows NSIS installer was not generated"
+            exit 1
+          }
+          Write-Host "Installer: $($installer.FullName)"
+
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: DBX-diagnostic-x64-portable
-          path: DBX-diagnostic-x64-portable.zip
+          name: DBX-mysql-tls-windows-x64-installer
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
