@@ -4516,6 +4516,7 @@ pub async fn list_triggers(pool: &MySqlPool, database: &str, table: &str) -> Res
             event: get_str_by_name(row, "EVENT_MANIPULATION"),
             timing: get_str_by_name(row, "ACTION_TIMING"),
             statement: Some(get_str_by_name(row, "ACTION_STATEMENT")).filter(|value| !value.is_empty()),
+            enabled: None,
         })
         .collect())
 }

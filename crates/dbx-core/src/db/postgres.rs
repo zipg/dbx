@@ -4107,6 +4107,7 @@ pub async fn list_triggers(pool: &Pool, schema: &str, table: &str) -> Result<Vec
             event: pg_row_try_string(row, 1),
             timing: pg_row_try_string(row, 2),
             statement: None,
+            enabled: None,
         })
         .collect())
 }

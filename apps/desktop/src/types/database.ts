@@ -486,6 +486,7 @@ export interface TriggerInfo {
   event: string;
   timing: string;
   statement?: string | null;
+  enabled?: boolean | null;
 }
 
 export interface ConstraintInfo {

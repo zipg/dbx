@@ -346,6 +346,8 @@ pub struct TriggerInfo {
     pub timing: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

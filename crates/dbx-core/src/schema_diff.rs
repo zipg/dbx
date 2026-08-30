@@ -5934,6 +5934,7 @@ mod tests {
                     event: "INSERT".to_string(),
                     timing: "AFTER".to_string(),
                     statement: None,
+                    enabled: None,
                 }],
                 ddl: None,
             },

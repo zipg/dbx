@@ -2346,6 +2346,7 @@ pub async fn list_triggers(pool: &SqliteHandle, schema: &str, table: &str) -> Re
                         event: event.to_string(),
                         timing: timing.to_string(),
                         statement: sql_text,
+                        enabled: None,
                     })
                 })
                 .map_err(|e| e.to_string())?;

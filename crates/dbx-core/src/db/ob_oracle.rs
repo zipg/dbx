@@ -310,7 +310,13 @@ pub async fn list_triggers(pool: &mysql_async::Pool, schema: &str, table: &str) 
             } else {
                 "INSTEAD OF"
             };
-            TriggerInfo { name: get_str(row, 0), event: get_str(row, 1), timing: timing.to_string(), statement: None }
+            TriggerInfo {
+                name: get_str(row, 0),
+                event: get_str(row, 1),
+                timing: timing.to_string(),
+                statement: None,
+                enabled: None,
+            }
         })
         .collect())
 }

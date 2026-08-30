@@ -239,6 +239,7 @@ pub async fn list_triggers(client: &RqliteClient, _schema: &str, table: &str) ->
                 event: event.to_string(),
                 timing: timing.to_string(),
                 statement: value_as_string(row.get(1)),
+                enabled: None,
             }
         })
         .collect())
