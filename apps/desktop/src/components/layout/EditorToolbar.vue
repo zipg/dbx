@@ -103,7 +103,11 @@ const supportsExPaste = computed(() => supportsSqlInListPaste(props.activeConnec
 const supportsTransaction = computed(() => supportsTransactionFeature(props.activeConnection?.db_type));
 const hasDefaultDatabaseOption = computed(() => activeDatabaseOptions.value.includes(""));
 const schemaDatabaseKey = computed(() => props.activeTab.database || (isSingleDb.value ? "_" : ""));
-const saveTooltip = computed(() => (props.activeTab.objectSource ? t("objects.saveSource") : t("toolbar.saveSql")));
+const saveTooltip = computed(() => {
+  if (props.activeTab.objectSource) return t("objects.saveSource");
+  if (props.activeTab.externalSqlPath) return t("toolbar.saveSqlFile");
+  return t("toolbar.saveSql");
+});
 // DM calls it autotrace, Postgres EXPLAIN ANALYZE, SQL Server the actual execution
 // plan (SET STATISTICS XML); all three execute the statement.
 const supportsExplainAnalyze = computed(() => {
