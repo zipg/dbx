@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 const LATEST_JSON_PATH: &str = "https://github.com/t8y2/dbx/releases/latest/download/latest.json";
+const CNB_LATEST_JSON_PATH: &str = "https://cnb.cool/dbxio.com/dbx/-/releases/latest/download/latest.json";
 const LATEST_JSON_R2_PATH: &str = "releases/latest/latest.json";
 const LATEST_EN_NOTES_R2_PATH: &str = "changelog/latest-en.json";
 const GITHUB_RELEASE_API_PREFIX: &str = "https://api.github.com/repos/t8y2/dbx/releases/tags/v";
@@ -47,15 +48,25 @@ pub struct UpdateInfo {
 }
 
 pub async fn fetch_latest_release(locale: &str) -> Result<TauriRelease, String> {
+    fetch_latest_release_from(locale, crate::DownloadSource::Official).await
+}
+
+pub async fn fetch_latest_release_from(locale: &str, source: crate::DownloadSource) -> Result<TauriRelease, String> {
     let client = build_update_http_client()?;
 
-    let resp = crate::race_download(&client, LATEST_JSON_PATH, LATEST_JSON_R2_PATH, "dbx-update-checker")
+    let latest_json_path = match source {
+        crate::DownloadSource::Official | crate::DownloadSource::Atomgit => LATEST_JSON_PATH,
+        crate::DownloadSource::Cnb => CNB_LATEST_JSON_PATH,
+    };
+    let resp = crate::race_download(&client, latest_json_path, LATEST_JSON_R2_PATH, "dbx-update-checker")
         .await
         .map_err(|e| format!("Failed to check updates: {e}"))?;
 
     let mut release = resp.json::<TauriRelease>().await.map_err(|e| format!("Failed to parse update response: {e}"))?;
-    if let Ok(github) = fetch_github_release_metadata(&client, &release.version).await {
-        release.github = Some(github);
+    if matches!(source, crate::DownloadSource::Official) {
+        if let Ok(github) = fetch_github_release_metadata(&client, &release.version).await {
+            release.github = Some(github);
+        }
     }
     // 非中文界面用户额外拉取英文 release notes；失败/版本不匹配则保持 None，上层回退中文。
     if !is_chinese_locale(locale) {

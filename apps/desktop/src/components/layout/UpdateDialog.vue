@@ -4,7 +4,9 @@ import { useI18n } from "vue-i18n";
 import { Loader2 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { UpdateInfo } from "@/lib/backend/api";
+import type { UpdateDownloadSource } from "@/lib/backend/tauri";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { canDownloadAndInstallUpdate } from "@/composables/useAppUpdater";
 
@@ -16,12 +18,16 @@ const props = defineProps<{
   isDownloadingUpdate: boolean;
   downloadProgress: number;
   updateReady: boolean;
+  checkingUpdates: boolean;
+  updateCheckFailed: boolean;
+  updateDownloadSource: UpdateDownloadSource;
 }>();
 
 const emit = defineEmits<{
   "open-latest-release": [];
   "download-and-install": [];
   restart: [];
+  "change-download-source": [source: UpdateDownloadSource];
 }>();
 
 const { t } = useI18n();
@@ -103,20 +109,35 @@ watch(
           {{ t("updates.portableManualUpdate") }}
         </p>
       </div>
-      <DialogFooter>
-        <Button v-if="!isDownloadingUpdate && !updateReady" variant="outline" @click="open = false">{{ t("dangerDialog.cancel") }}</Button>
-        <template v-if="updateInfo?.update_available">
-          <Button variant="outline" @click="emit('open-latest-release')">{{ t("updates.openRelease") }}</Button>
-          <template v-if="canDownloadAndInstallUpdate(updateInfo, isDesktop)">
-            <Button v-if="updateReady" @click="emit('restart')">{{ t("updates.restart") }}</Button>
-            <Button v-else-if="isDownloadingUpdate" disabled>
-              <Loader2 class="h-4 w-4 animate-spin" />
-              {{ t("updates.downloading", { progress: downloadProgress }) }}
-            </Button>
-            <Button v-else @click="emit('download-and-install')">{{ t("updates.downloadAndInstall") }}</Button>
+      <DialogFooter class="relative sm:justify-end">
+        <div v-if="updateCheckFailed && !isDownloadingUpdate && !updateReady" class="flex items-center gap-1.5 self-start sm:absolute sm:left-4 sm:top-1/2 sm:-translate-y-1/2">
+          <span class="text-xs text-muted-foreground">{{ t("updates.source") }}</span>
+          <Select :model-value="updateDownloadSource" :disabled="checkingUpdates" @update:model-value="(value) => value && emit('change-download-source', value as UpdateDownloadSource)">
+            <SelectTrigger class="h-8 w-[150px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="official">{{ t("updates.sourceOfficial") }}</SelectItem>
+              <SelectItem value="cnb">{{ t("updates.sourceCnb") }}</SelectItem>
+              <SelectItem value="atomgit">{{ t("updates.sourceAtomgit") }}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div class="ml-auto flex flex-wrap justify-end gap-2">
+          <Button v-if="!isDownloadingUpdate && !updateReady" variant="outline" @click="open = false">{{ t("dangerDialog.cancel") }}</Button>
+          <template v-if="updateInfo?.update_available">
+            <Button variant="outline" @click="emit('open-latest-release')">{{ t("updates.openRelease") }}</Button>
+            <template v-if="canDownloadAndInstallUpdate(updateInfo, isDesktop)">
+              <Button v-if="updateReady" @click="emit('restart')">{{ t("updates.restart") }}</Button>
+              <Button v-else-if="isDownloadingUpdate" disabled>
+                <Loader2 class="h-4 w-4 animate-spin" />
+                {{ t("updates.downloading", { progress: downloadProgress }) }}
+              </Button>
+              <Button v-else @click="emit('download-and-install')">{{ t("updates.downloadAndInstall") }}</Button>
+            </template>
           </template>
-        </template>
-        <Button v-else-if="updateCheckMessage" @click="emit('open-latest-release')">{{ t("updates.openRelease") }}</Button>
+          <Button v-else-if="updateCheckMessage" :disabled="checkingUpdates" @click="emit('open-latest-release')">{{ t("updates.openRelease") }}</Button>
+        </div>
       </DialogFooter>
     </DialogContent>
   </Dialog>
