@@ -71,6 +71,14 @@ export function buildSqlSemanticDiagnostics(analysis: SqlReferenceAnalysis, sche
     const columnNames = new Set(columns.map((item) => normalizeName(item.name)));
     if (columnNames.has(normalizeName(column.name))) continue;
 
+    // SQL engines allow SELECT projection aliases in ORDER BY/GROUP BY (and,
+    // for example, DuckDB also allows them in HAVING). The reference parser
+    // reports those aliases as ordinary columns, so metadata-only validation
+    // would otherwise show a false "Unknown column" diagnostic. Reuse the
+    // completion context, which already extracts aliases and knows when they
+    // are visible, to keep diagnostics aligned with executable SQL semantics.
+    if (schema.sql && isVisibleProjectionAlias(schema.sql, column.span, column.name)) continue;
+
     const displayName = column.qualifier ? `${column.qualifier}.${column.name}` : column.name;
     diagnostics.push({
       span: trimSqlTextSpanWhitespace(schema.sql, column.span),
@@ -80,6 +88,14 @@ export function buildSqlSemanticDiagnostics(analysis: SqlReferenceAnalysis, sche
   }
 
   return diagnostics;
+}
+
+function isVisibleProjectionAlias(sql: string, span: SqlTextSpan, name: string): boolean {
+  const range = sqlTextSpanToOffsetRange(sql, span);
+  if (!range) return false;
+  const context = getSqlCompletionContext(sql, range.to);
+  if (!context.prioritizeSelectAliases) return false;
+  return context.selectAliases.some((alias) => normalizeName(alias) === normalizeName(name));
 }
 
 function trimSqlTextSpanWhitespace(sql: string | undefined, span: SqlTextSpan): SqlTextSpan {
