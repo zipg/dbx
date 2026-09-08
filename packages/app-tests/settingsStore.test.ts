@@ -274,6 +274,37 @@ test("migrates the legacy saved export batch default to 2000 once", async () => 
   });
 });
 
+test("migrates legacy localStorage settings without dropping unrelated preferences", async () => {
+  await withMockLocalStorage(
+    {
+      "dbx-editor-settings": JSON.stringify({
+        fontSize: 17,
+        sidebarActivation: "double",
+        pageSize: 250,
+        confirmDangerousSqlExecution: false,
+      }),
+    },
+    async () => {
+      setActivePinia(createPinia());
+      const store = useSettingsStore();
+      await store.initEditorSettings();
+
+      assert.equal(store.editorSettings.sidebarBrowseObjectsOnDatabaseActivation, true);
+      assert.equal(store.editorSettings.fontSize, 17);
+      assert.equal(store.editorSettings.sidebarActivation, "double");
+      assert.equal(store.editorSettings.pageSize, 250);
+      assert.equal(store.editorSettings.confirmDangerousSqlExecution, false);
+      assert.equal(localStorage.getItem("dbx-editor-settings"), null);
+      const saved = JSON.parse(localStorage.getItem("dbx-app-state:editor_settings") || "{}") as Record<string, unknown>;
+      assert.equal(saved.sidebarBrowseObjectsOnDatabaseActivation, true);
+      assert.equal(saved.fontSize, 17);
+      assert.equal(saved.sidebarActivation, "double");
+      assert.equal(saved.pageSize, 250);
+      assert.equal(saved.confirmDangerousSqlExecution, false);
+    },
+  );
+});
+
 test("keeps a manually saved 10000 export batch size after migration", async () => {
   await withMockLocalStorage(
     {
@@ -532,7 +563,13 @@ test("preserves object browsing for legacy sidebar settings", () => {
 test("migrates existing settings once and preserves a later explicit opt-out", async () => {
   await withMockLocalStorage(
     {
-      "dbx-app-state:editor_settings": JSON.stringify({ sidebarBrowseObjectsOnDatabaseActivation: false }),
+      "dbx-app-state:editor_settings": JSON.stringify({
+        fontSize: 17,
+        sidebarActivation: "double",
+        pageSize: 250,
+        confirmDangerousSqlExecution: false,
+        sidebarBrowseObjectsOnDatabaseActivation: false,
+      }),
     },
     async () => {
       setActivePinia(createPinia());
@@ -541,10 +578,18 @@ test("migrates existing settings once and preserves a later explicit opt-out", a
 
       assert.equal(migratedStore.editorSettings.sidebarBrowseObjectsOnDatabaseActivation, true);
       assert.equal(migratedStore.editorSettings.sidebarBrowseObjectsOnDatabaseActivationMigrationVersion, SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION);
+      assert.equal(migratedStore.editorSettings.fontSize, 17);
+      assert.equal(migratedStore.editorSettings.sidebarActivation, "double");
+      assert.equal(migratedStore.editorSettings.pageSize, 250);
+      assert.equal(migratedStore.editorSettings.confirmDangerousSqlExecution, false);
       await vi.waitFor(() => {
         const saved = JSON.parse(localStorage.getItem("dbx-app-state:editor_settings") || "{}") as Record<string, unknown>;
         assert.equal(saved.sidebarBrowseObjectsOnDatabaseActivation, true);
         assert.equal(saved.sidebarBrowseObjectsOnDatabaseActivationMigrationVersion, SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION);
+        assert.equal(saved.fontSize, 17);
+        assert.equal(saved.sidebarActivation, "double");
+        assert.equal(saved.pageSize, 250);
+        assert.equal(saved.confirmDangerousSqlExecution, false);
       });
 
       migratedStore.updateEditorSettings({ sidebarBrowseObjectsOnDatabaseActivation: false });

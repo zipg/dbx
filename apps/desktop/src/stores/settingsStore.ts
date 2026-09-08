@@ -1606,7 +1606,9 @@ function loadLegacyEditorSettings(): EditorSettings | null {
       if (parsed.exportBatchSize === LEGACY_DEFAULT_EXPORT_BATCH_SIZE && safeLocalStorageGet(EXPORT_BATCH_SIZE_DEFAULT_MIGRATION_KEY) !== "1") {
         parsed.exportBatchSize = DEFAULT_EDITOR_SETTINGS.exportBatchSize;
       }
-      return normalizeEditorSettings(parsed);
+      const normalized = normalizeEditorSettings(parsed);
+      normalized.sidebarBrowseObjectsOnDatabaseActivationMigrationVersion = 0;
+      return normalized;
     } catch {
       return null;
     }
@@ -1615,7 +1617,10 @@ function loadLegacyEditorSettings(): EditorSettings | null {
   const oldSize = safeLocalStorageGet(OLD_FONT_SIZE_KEY);
   if (!oldSize) return null;
   const parsed = parseInt(oldSize, 10);
-  return Number.isNaN(parsed) ? null : normalizeEditorSettings({ fontSize: parsed });
+  if (Number.isNaN(parsed)) return null;
+  const normalized = normalizeEditorSettings({ fontSize: parsed });
+  normalized.sidebarBrowseObjectsOnDatabaseActivationMigrationVersion = 0;
+  return normalized;
 }
 
 function clearLegacyEditorSettings() {
@@ -1764,6 +1769,10 @@ export const useSettingsStore = defineStore("settings", () => {
 
         const legacy = loadLegacyEditorSettings();
         if (legacy) {
+          if (legacy.sidebarBrowseObjectsOnDatabaseActivationMigrationVersion !== SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION) {
+            legacy.sidebarBrowseObjectsOnDatabaseActivation = true;
+            legacy.sidebarBrowseObjectsOnDatabaseActivationMigrationVersion = SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION;
+          }
           editorSettings.value = legacy;
           try {
             await enqueueEditorSettingsSave();
