@@ -368,6 +368,7 @@ const appSidebarRef = ref<InstanceType<typeof AppSidebar> | null>(null);
 const appTabBarRef = ref<InstanceType<typeof AppTabBar> | null>(null);
 const contentAreaRef = ref<InstanceType<typeof SqlEditorWorkspace> | null>(null);
 const lastFocusedAuxiliarySurface = ref<AuxiliarySearchSurface>(null);
+const lastFocusedSidebarSurface = ref(false);
 
 const selectedSql = ref("");
 const cursorPos = ref(0);
@@ -1432,6 +1433,7 @@ function setRightSidebarPanelOpen(panelId: RightSidebarPanelId, open: boolean) {
     lastOpenedRightSidebarPanel = panelId;
     if (panelId === "ai" || panelId === "history" || panelId === "sqlLibrary") {
       lastFocusedAuxiliarySurface.value = panelId;
+      lastFocusedSidebarSurface.value = false;
     }
   } else if (lastOpenedRightSidebarPanel === panelId) {
     lastOpenedRightSidebarPanel = RIGHT_SIDEBAR_PANEL_IDS.find((candidate) => rightSidebarPanelRefs[candidate].value);
@@ -3194,6 +3196,7 @@ function focusSearchInAuxiliarySurface(target: Element | null): boolean {
 
   const targetIsDocument = !target || target === document.body || target === document.documentElement;
   if (!targetIsDocument) return false;
+  if (lastFocusedSidebarSurface.value) return false;
 
   if (lastFocusedAuxiliarySurface.value === "ai" && showAiPanel.value) {
     if (aiAssistantRef.value) return aiAssistantRef.value.focusSearch();
@@ -3207,6 +3210,11 @@ function focusSearchInAuxiliarySurface(target: Element | null): boolean {
 
 function rememberAuxiliarySearchSurface(surface: Exclude<AuxiliarySearchSurface, null>) {
   lastFocusedAuxiliarySurface.value = surface;
+  lastFocusedSidebarSurface.value = false;
+}
+
+function rememberSidebarSearchSurface() {
+  lastFocusedSidebarSurface.value = true;
 }
 
 function setPluginWorkbenchTabRef(tabId: string, element: unknown) {
@@ -3285,7 +3293,9 @@ async function handleKeydown(e: KeyboardEvent) {
     // Otherwise Ctrl+F from empty space in the sidebar incorrectly opens the
     // search belonging to the active table/query tab.
     const target = e.target instanceof Element ? e.target : null;
-    const focused = target?.closest("[data-app-sidebar]") ? appSidebarRef.value?.focusSearch(target) : focusSearchInAuxiliarySurface(target) || contentAreaRef.value?.focusSearch(target) || appSidebarRef.value?.focusSearch(target);
+    const targetIsDocument = !target || target === document.body || target === document.documentElement;
+    const sidebarFocused = target?.closest("[data-app-sidebar]") || (targetIsDocument && lastFocusedSidebarSurface.value);
+    const focused = sidebarFocused ? appSidebarRef.value?.focusSearch(target) : focusSearchInAuxiliarySurface(target) || contentAreaRef.value?.focusSearch(target) || appSidebarRef.value?.focusSearch(target);
     if (focused) {
       e.preventDefault();
       e.stopPropagation();
@@ -3740,6 +3750,7 @@ onUnmounted(() => {
             @collapse="setSidebarOpen(false)"
             @open-settings="(initialTab) => openSettings(initialTab ?? 'appearance')"
             @add-to-ai="addToAi"
+            @mousedown="rememberSidebarSearchSurface"
           />
 
           <div v-show="!isAiPanelMaximized || isZenMode" :class="isDetachedWindowContext ? 'flex-1 min-w-0 overflow-hidden bg-background' : isClassicLayout ? 'flex-1 min-w-0 overflow-hidden' : 'flex-1 min-w-0 overflow-hidden rounded-md border border-border/80 bg-background'">
