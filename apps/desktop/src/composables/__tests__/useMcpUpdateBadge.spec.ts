@@ -97,6 +97,19 @@ describe("useMcpUpdateBadge", () => {
     expect(badge.mcpUpdateAvailable.value).toBe(false);
   });
 
+  it("组件更新的权威结果会使在途检查失效", async () => {
+    const pending = deferred<McpServerStatus>();
+    mockedCheck.mockReturnValueOnce(pending.promise);
+    const badge = makeBadge(true);
+    const refresh = badge.refreshMcpUpdateStatus();
+
+    badge.applyMcpStatus(false);
+    pending.resolve(makeStatus(true));
+    await refresh;
+
+    expect(badge.mcpUpdateAvailable.value).toBe(false);
+  });
+
   it("忽略早于当前根组件请求的设置页事件", async () => {
     const settingsRequestId = beginMcpStatusRequest();
     const pending = deferred<McpServerStatus>();

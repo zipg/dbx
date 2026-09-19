@@ -26,6 +26,13 @@ describe("plugin center integration", () => {
     expect(driverStoreSource).not.toContain("PluginContributionsPanel");
   });
 
+  it("refreshes the plugin center after component-level plugin updates", () => {
+    expect(appSource).toContain("notifyComponentPluginsUpdated()");
+    expect(pluginCenterSource).toContain("COMPONENT_PLUGINS_UPDATED_EVENT");
+    expect(pluginCenterSource).toContain("window.addEventListener(COMPONENT_PLUGINS_UPDATED_EVENT, handleComponentPluginsUpdated)");
+    expect(pluginCenterSource).toContain("installedPlugins.value = await api.listPlugins()");
+  });
+
   it("formats structured backend errors for local and URL package installs", () => {
     const localInstall = pluginCenterSource.slice(pluginCenterSource.indexOf("async function installPlugin("), pluginCenterSource.indexOf("function isHttpPackageUrl("));
     const urlInstall = pluginCenterSource.slice(pluginCenterSource.indexOf("async function installPluginFromUrl("), pluginCenterSource.indexOf("const urlProgressPercent"));
