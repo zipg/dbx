@@ -7779,7 +7779,8 @@ export default withEnglishFallback({
     csvQuoteModeAll: "Tutti i campi",
     csvQuoteModeNecessary: "Solo quando necessario",
     csvNullMode: "Rappresentazione di NULL nel CSV",
-    csvNullModeDescription: "Come viene scritto NULL durante l'esportazione CSV. «\\N» distingue NULL dalla stringa vuota, così al reimport le stringhe vuote non diventano NULL; «Vuoto» mantiene il comportamento precedente, ma non li distingue.",
+    csvNullModeDescription:
+      "Come viene scritto NULL durante l'esportazione CSV. Con «\\N», NULL viene scritto come \\N e le stringhe vuote come campi vuoti, quindi restano distinguibili e al reimport le stringhe vuote non diventano NULL. Con «Vuoto», sia NULL sia le stringhe vuote vengono scritti come campi vuoti e non sono distinguibili.",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "Vuoto",
     performanceSection: "Prestazioni",

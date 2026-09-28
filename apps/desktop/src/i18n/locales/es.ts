@@ -7855,7 +7855,8 @@ export default withEnglishFallback({
     csvQuoteModeAll: "Todos los campos",
     csvQuoteModeNecessary: "Solo cuando sea necesario",
     csvNullMode: "Representación de NULL en CSV",
-    csvNullModeDescription: "Cómo se escribe NULL al exportar CSV. «\\N» distingue NULL de la cadena vacía, de modo que al reimportar las cadenas vacías no se convierten en NULL; «Vacío» mantiene el comportamiento anterior, pero no los distingue.",
+    csvNullModeDescription:
+      "Cómo se escribe NULL al exportar CSV. Con «\\N», NULL se escribe como \\N y las cadenas vacías como campos vacíos, así que se distinguen y al reimportar las cadenas vacías no se convierten en NULL. Con «Vacío», tanto NULL como las cadenas vacías se escriben como campos vacíos y no se pueden distinguir.",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "Vacío",
     performanceSection: "Rendimiento",

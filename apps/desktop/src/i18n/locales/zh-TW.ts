@@ -7612,7 +7612,7 @@ export default withEnglishFallback({
     csvQuoteModeAll: "全部欄位",
     csvQuoteModeNecessary: "僅必要欄位",
     csvNullMode: "CSV NULL 表示",
-    csvNullModeDescription: "匯出 CSV 時 NULL 的寫法。選「\\N」可區分 NULL 與空字串，重新匯入時不會把空字串寫成 NULL；選「留空」與舊版本一致，但兩者在檔案裡無法區分。",
+    csvNullModeDescription: "匯出 CSV 時 NULL 的寫法。選「\\N」時 NULL 寫成 \\N、空字串寫成空欄位，兩者可以區分，重新匯入不會把空字串變成 NULL；選「留空」時 NULL 與空字串都寫成空欄位，在檔案裡無法區分。",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "留空",
     performanceSection: "效能",

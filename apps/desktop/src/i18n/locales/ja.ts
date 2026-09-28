@@ -7778,7 +7778,7 @@ export default withEnglishFallback({
     csvQuoteModeAll: "すべてのフィールド",
     csvQuoteModeNecessary: "必要な場合のみ",
     csvNullMode: "CSV の NULL 表記",
-    csvNullModeDescription: "CSV エクスポート時に NULL を書く方式です。「\\N」は NULL と空文字列を区別でき、再インポートしても空文字列が NULL になりません。「空」は以前の動作と同じですが区別できません。",
+    csvNullModeDescription: "CSV エクスポート時に NULL を書く方式です。「\\N」では NULL を \\N、空文字列を空フィールドとして書き出すため両者を区別でき、再インポートしても空文字列は NULL になりません。「空」では NULL も空文字列も空フィールドとして書き出すため、区別できません。",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "空",
     performanceSection: "パフォーマンス",

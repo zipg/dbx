@@ -7723,7 +7723,7 @@ export default withEnglishFallback({
     csvQuoteModeAll: "Tüm alanlar",
     csvQuoteModeNecessary: "Yalnızca gerektiğinde",
     csvNullMode: "CSV NULL gösterimi",
-    csvNullModeDescription: "CSV dışa aktarılırken NULL nasıl yazılır. «\\N» NULL ile boş dizeyi ayırır, böylece yeniden içe aktarımda boş dizeler NULL olmaz; «Boş» eski davranışı korur ancak ikisini ayırmaz.",
+    csvNullModeDescription: "CSV dışa aktarılırken NULL nasıl yazılır. «\\N» ile NULL \\N olarak, boş dize ise boş alan olarak yazılır; böylece ikisi ayırt edilebilir ve yeniden içe aktarımda boş dize NULL olmaz. «Boş» ile hem NULL hem de boş dize boş alan olarak yazılır ve ayırt edilemez.",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "Boş",
     performanceSection: "Başarım",

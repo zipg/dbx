@@ -8085,7 +8085,7 @@ export default withEnglishFallback({
     csvQuoteModeAll: "모든 필드",
     csvQuoteModeNecessary: "필수 필드만",
     csvNullMode: "CSV NULL 표기",
-    csvNullModeDescription: 'CSV 내보내기 시 NULL을 쓰는 방식입니다. "\\N"은 NULL과 빈 문자열을 구분하므로 다시 가져올 때 빈 문자열이 NULL이 되지 않습니다. "비움"은 이전 동작과 같지만 구분할 수 없습니다.',
+    csvNullModeDescription: 'CSV 내보내기 시 NULL을 쓰는 방식입니다. "\\N"은 NULL을 \\N으로, 빈 문자열을 빈 필드로 쓰므로 둘을 구분할 수 있고 다시 가져와도 빈 문자열이 NULL이 되지 않습니다. "비움"은 NULL과 빈 문자열을 모두 빈 필드로 쓰므로 구분할 수 없습니다.',
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "비움",
     shortcutConvertNamingStyle: "네이밍 스타일 전환",

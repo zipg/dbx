@@ -8515,7 +8515,7 @@ export default withEnglishFallback({
     csvQuoteModeAll: "全部字段",
     csvQuoteModeNecessary: "仅必要字段",
     csvNullMode: "CSV NULL 表示",
-    csvNullModeDescription: "导出 CSV 时 NULL 的写法。选「\\N」可区分 NULL 与空字符串，重新导入时不会把空字符串写成 NULL；选「留空」与旧版本一致，但两者在文件里无法区分。",
+    csvNullModeDescription: "导出 CSV 时 NULL 的写法。选「\\N」时 NULL 写成 \\N、空字符串写为空字段，两者可以区分，重新导入不会把空字符串变成 NULL；选「留空」时 NULL 与空字符串都写为空字段，在文件里无法区分。",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "留空",
     performanceSection: "性能",

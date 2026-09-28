@@ -9051,7 +9051,8 @@ export default withEnglishFallback({
     csvQuoteModeAll: "Все поля",
     csvQuoteModeNecessary: "Только когда нужно",
     csvNullMode: "Представление NULL в CSV",
-    csvNullModeDescription: "Как записывается NULL при экспорте CSV. «\\N» отличает NULL от пустой строки, поэтому при повторном импорте пустые строки не станут NULL; «Пусто» сохраняет прежнее поведение, но не различает их.",
+    csvNullModeDescription:
+      "Как записывается NULL при экспорте CSV. С «\\N» NULL записывается как \\N, а пустая строка — как пустое поле, поэтому они различимы и при повторном импорте пустая строка не станет NULL. С «Пусто» и NULL, и пустая строка записываются как пустое поле, и различить их нельзя.",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "Пусто",
     performanceSection: "Производительность",

@@ -8552,7 +8552,8 @@ export default {
     csvQuoteModeAll: "All fields",
     csvQuoteModeNecessary: "Only when needed",
     csvNullMode: "CSV NULL representation",
-    csvNullModeDescription: 'How NULL is written when exporting CSV. "\\N" keeps NULL distinguishable from an empty string, so re-importing does not turn empty strings into NULL; "Empty" matches older versions but leaves the two indistinguishable.',
+    csvNullModeDescription:
+      'How NULL is written when exporting CSV. With "\\N", NULL is written as \\N and empty strings as empty fields, so the two stay distinguishable and re-importing does not turn empty strings into NULL. With "Empty", NULL and empty strings are both written as empty fields and cannot be told apart.',
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "Empty",
     performanceSection: "Performance",

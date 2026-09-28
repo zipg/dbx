@@ -7824,7 +7824,8 @@ export default withEnglishFallback({
     csvQuoteModeAll: "Bütün sahələr",
     csvQuoteModeNecessary: "Yalnız lazım olduqda",
     csvNullMode: "CSV NULL təsviri",
-    csvNullModeDescription: "CSV ixracında NULL-un yazılma üsulu. «\\N» NULL ilə boş sətri fərqləndirir, yenidən idxalda boş sətirlər NULL olmur; «Boş» köhnə davranışı saxlayır, lakin onları fərqləndirmir.",
+    csvNullModeDescription:
+      "CSV ixracında NULL-un yazılma üsulu. «\\N» seçildikdə NULL \\N kimi, boş sətir isə boş sahə kimi yazılır; beləliklə onları fərqləndirmək mümkündür və yenidən idxalda boş sətir NULL olmur. «Boş» seçildikdə həm NULL, həm də boş sətir boş sahə kimi yazılır və fərqləndirilə bilmir.",
     csvNullModeMarker: "\\N",
     csvNullModeEmpty: "Boş",
     performanceSection: "Məhsuldarlıq",
