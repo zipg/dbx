@@ -1,0 +1,78 @@
+name: Fork Desktop Artifacts
+
+on:
+  push:
+    branches:
+      - codex/windows-installer-diagnostics-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    name: Windows x64 installer diagnostics
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+          shared-key: fork-desktop-x86_64-pc-windows-msvc
+          cache-on-failure: true
+
+      - name: Build Windows x64 NSIS test installer
+        run: pnpm tauri build --bundles nsis --target x86_64-pc-windows-msvc --ci --no-sign
+
+      - name: Check diagnostics and required-file failures on Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          node --test --test-name-pattern="Installer write failure diagnostics compile" scripts/windows-installer.test.mjs | Tee-Object -FilePath artifacts/windows-installer-tests.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect test installer and SHA256
+        shell: pwsh
+        run: |
+          $bundleDir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem $bundleDir -Filter "*.exe" | Select-Object -First 1
+          if (!$installer) { throw "Missing Windows installer" }
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $name = "DBX_${version}_x64-installer-diagnostics-setup.exe"
+          Copy-Item $installer.FullName (Join-Path artifacts $name)
+          $hash = Get-FileHash (Join-Path artifacts $name) -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $name" | Set-Content artifacts/SHA256SUMS.txt
+          @"
+          Windows x64 NSIS manual test installer
+          Source: ${{ github.repository }} @ ${{ github.sha }}
+          Fix PR: https://github.com/t8y2/dbx/pull/11283 (draft)
+          Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Version: $version
+          This test package contains the draft installer diagnostics fix.
+          "@ | Set-Content artifacts/BUILD-INFO.txt
+
+      - name: Upload Windows test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: DBX-Windows-x64-installer-diagnostics
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
