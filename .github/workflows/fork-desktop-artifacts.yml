@@ -33,19 +33,34 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./ -> target"
-          shared-key: fork-desktop-x86_64-pc-windows-msvc
-          cache-on-failure: true
+      - name: Reuse the official application executable for installer testing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          gh release download "v$version" --repo t8y2/dbx --pattern "DBX_${version}_x64-setup.exe" --dir prebuilt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & 7z x "prebuilt/DBX_${version}_x64-setup.exe" -oprebuilt/unpacked -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $binary = Get-ChildItem prebuilt/unpacked -Recurse -Filter dbx.exe | Select-Object -First 1
+          if (!$binary) { throw "Missing official application executable" }
+          $releaseDir = "target/x86_64-pc-windows-msvc/release"
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+          Copy-Item $binary.FullName (Join-Path $releaseDir "dbx.exe")
+          (Get-FileHash $binary.FullName -Algorithm SHA256).Hash | Set-Content prebuilt/application-sha256.txt
 
-      - name: Build Windows x64 NSIS test installer
-        run: pnpm tauri build --bundles nsis --target x86_64-pc-windows-msvc --ci --no-sign
+      - name: Bundle the updated Windows x64 NSIS test installer
+        run: pnpm tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config .github/fixtures/win7-nsis-zlib-config.json --ci --no-sign
 
       - name: Check diagnostics and required-file failures on Windows
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $env:NSIS_MAKENSIS = Join-Path $env:LOCALAPPDATA "tauri/NSIS/makensis.exe"
+          if (!(Test-Path $env:NSIS_MAKENSIS)) { throw "Missing NSIS compiler; Windows tests must not be skipped" }
+          & $env:NSIS_MAKENSIS /VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test --test-name-pattern="Installer write failure diagnostics compile" scripts/windows-installer.test.mjs | Tee-Object -FilePath artifacts/windows-installer-tests.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -66,7 +81,11 @@ jobs:
           Fix PR: https://github.com/t8y2/dbx/pull/11283 (draft)
           Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           Version: $version
-          This test package contains the draft installer diagnostics fix.
+          Application: official t8y2/dbx release v$version (reused executable)
+          Application source SHA256: $(Get-Content prebuilt/application-sha256.txt)
+          Installer: draft PR fix with Manual installation button
+          NSIS test-package compression: zlib
+          This is an installer test package, not a newly compiled application.
           "@ | Set-Content artifacts/BUILD-INFO.txt
 
       - name: Upload Windows test package
