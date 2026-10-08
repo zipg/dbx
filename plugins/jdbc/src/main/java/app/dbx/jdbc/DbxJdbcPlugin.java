@@ -1786,6 +1786,21 @@ public final class DbxJdbcPlugin {
         String statementId = "DBX_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
         String statementSql = trimStatementSql(sql);
         StringBuilder plan = new StringBuilder();
+        // EXPLAIN PLAN and DBMS_XPLAN.DISPLAY are two separately autocommitted statements. A
+        // schema that ships its own PLAN_TABLE as GLOBAL TEMPORARY TABLE ... ON COMMIT DELETE
+        // ROWS loses the plan rows at the commit in between, so DISPLAY answers with
+        // "cannot fetch plan for statement_id '...'". Run both inside one transaction to keep
+        // the rows written by EXPLAIN PLAN visible for the read.
+        //
+        // The read must also name the same table Oracle wrote to. EXPLAIN PLAN resolves its plan
+        // table in the session user's schema, while a bare 'PLAN_TABLE' inside DBMS_XPLAN.DISPLAY
+        // resolves in CURRENT_SCHEMA — and DBX switches CURRENT_SCHEMA whenever a connection
+        // browses another schema. Without the explicit name the write and the read can land on
+        // two different objects, which is the other way "cannot fetch plan for statement_id"
+        // shows up.
+        String planTable = oracleExplainPlanTable(connection);
+        String displayTable = planTable == null ? "PLAN_TABLE" : planTable;
+        boolean explainTransaction = beginOracleExplainTransaction(connection);
         try {
             try (PreparedStatement explain = connection.prepareStatement(
                 "EXPLAIN PLAN SET STATEMENT_ID = '" + statementId + "' FOR " + statementSql
@@ -1795,7 +1810,7 @@ public final class DbxJdbcPlugin {
                 explain.execute();
             }
             try (PreparedStatement read = connection.prepareStatement(
-                "SELECT PLAN_TABLE_OUTPUT FROM TABLE(DBMS_XPLAN.DISPLAY('PLAN_TABLE', ?, 'TYPICAL +PREDICATE'))"
+                "SELECT PLAN_TABLE_OUTPUT FROM TABLE(DBMS_XPLAN.DISPLAY('" + displayTable + "', ?, 'TYPICAL +PREDICATE'))"
             )) {
                 applyExplainTimeout(read, timeoutSecs);
                 read.setString(1, statementId);
@@ -1809,12 +1824,85 @@ public final class DbxJdbcPlugin {
             return plan.toString();
         } finally {
             try (PreparedStatement cleanup = connection.prepareStatement(
-                "DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = ?"
+                "DELETE FROM " + displayTable + " WHERE STATEMENT_ID = ?"
             )) {
                 applyExplainTimeout(cleanup, timeoutSecs);
                 cleanup.setString(1, statementId);
                 cleanup.executeUpdate();
             } catch (SQLException ignored) {}
+            endOracleExplainTransaction(connection, explainTransaction);
+        }
+    }
+
+    /**
+     * Explicitly qualified name of the plan table that EXPLAIN PLAN resolves for this session:
+     * the session user's own object named PLAN_TABLE when it exists, otherwise the table behind the
+     * PUBLIC synonym (usually SYS.PLAN_TABLE$). Passing that name to DBMS_XPLAN.DISPLAY keeps the
+     * read on the table Oracle wrote to even when CURRENT_SCHEMA points at another schema. Returns
+     * null when neither can be resolved, so callers fall back to the unqualified name.
+     */
+    private static String oracleExplainPlanTable(Connection connection) {
+        String sql = "SELECT"
+            + " (SELECT OWNER || '.' || OBJECT_NAME FROM ALL_OBJECTS"
+            + " WHERE OWNER = USER AND OBJECT_NAME = 'PLAN_TABLE' AND ROWNUM = 1),"
+            + " (SELECT TABLE_OWNER || '.' || TABLE_NAME FROM ALL_SYNONYMS"
+            + " WHERE OWNER = 'PUBLIC' AND SYNONYM_NAME = 'PLAN_TABLE' AND ROWNUM = 1)"
+            + " FROM DUAL";
+        try (PreparedStatement probe = connection.prepareStatement(sql);
+             ResultSet rows = probe.executeQuery()) {
+            if (!rows.next()) {
+                return null;
+            }
+            String sessionPlanTable = rows.getString(1);
+            if (sessionPlanTable != null && !sessionPlanTable.isBlank()) {
+                return sessionPlanTable;
+            }
+            String publicPlanTable = rows.getString(2);
+            if (publicPlanTable != null && !publicPlanTable.isBlank()) {
+                return publicPlanTable;
+            }
+            return null;
+        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Oracle JDBC commits each statement in auto-commit mode, which is exactly what discards
+     * plan rows held by a session plan table created as ON COMMIT DELETE ROWS. Switch the
+     * connection into a short-lived transaction so EXPLAIN PLAN and the DBMS_XPLAN read share
+     * one commit point. Skipped when the shared connection is already inside a manual
+     * transaction or holds an open query session, and when the driver cannot toggle
+     * auto-commit at all.
+     */
+    private static boolean beginOracleExplainTransaction(Connection connection) {
+        try {
+            if (
+                !connection.getAutoCommit()
+                    || connectionState().manualTransactionActive
+                    || hasActiveQuerySession(connection)
+            ) {
+                return false;
+            }
+            connection.setAutoCommit(false);
+            return true;
+        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
+            return false;
+        }
+    }
+
+    private static void endOracleExplainTransaction(Connection connection, boolean explainTransaction) {
+        if (!explainTransaction) {
+            return;
+        }
+        try {
+            // Commit instead of rollback so the plan-row cleanup above is not undone.
+            connection.commit();
+        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
+        }
+        try {
+            connection.setAutoCommit(true);
+        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
         }
     }
 
