@@ -120,6 +120,7 @@ jobs:
           "Commit: $env:GITHUB_SHA`nRuntime: 109.0.1518.78`nTarget: x86_64-win7-windows-msvc`nUnsigned experimental installer" | Set-Content artifacts/BUILD-INFO.txt
 
       - name: Probe real WebView2 109 CSSColor4 on and off
+        timeout-minutes: 5
         shell: pwsh
         run: node .github/scripts/win7-csscolor4-canary.mjs target/x86_64-win7-windows-msvc/release/dbx.exe src-tauri/webview2-fixed-runtime artifacts/canary
 

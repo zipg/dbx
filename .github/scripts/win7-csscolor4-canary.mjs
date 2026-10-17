@@ -25,8 +25,26 @@ async function connect(url) {
     else request.resolve(message.result);
   });
   await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", reject, { once: true });
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error("CDP connection timed out"));
+    }, 10000);
+    socket.addEventListener(
+      "open",
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      { once: true },
+    );
+    socket.addEventListener(
+      "error",
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+      { once: true },
+    );
   });
   return {
     send(method, params = {}) {

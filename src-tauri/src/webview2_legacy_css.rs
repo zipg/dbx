@@ -65,7 +65,7 @@ fn add_feature(args: &str, switch: &str) -> String {
         let separator = if args[range.clone()].trim().is_empty() { "" } else { "," };
         updated.insert_str(range.end, &format!("{separator}{FEATURE}"));
     } else {
-        if !updated.is_empty() && !updated.ends_with(char::is_whitespace) {
+        if !updated.is_empty() && !updated.as_bytes().last().is_some_and(|byte| byte.is_ascii_whitespace()) {
             updated.push(' ');
         }
         updated.push_str(switch);
