@@ -120,10 +120,40 @@ async function run(disabled, port) {
     const result = { mode, runtimeVersion: version.product, capabilities, targetUrl: target.url, scope: "WebView2 109 on Windows Actions runner; not a Win7 OS test" };
     await writeFile(join(output, `result-${mode}.json`), JSON.stringify(result, null, 2));
     try {
+      await cdp.send("Page.enable");
+      const { frameTree } = await cdp.send("Page.getFrameTree");
+      const html = `<!doctype html><meta charset="utf-8"><title>WebView2 109 color probe</title>
+<style>
+body{margin:0;padding:40px;font:16px/1.5 Segoe UI,Arial,sans-serif;color:#182135;background:#f5f6f8}
+h1{margin:0 0 12px;font-size:28px}p{margin:8px 0}code{font-size:14px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin:30px 0}
+.card{padding:18px;border:1px solid #c9cdd4;border-radius:12px;background:white}
+.swatch{height:135px;border-radius:8px;margin:16px 0;background:rgb(230,232,236)}
+.note{padding:16px;background:#fff;border:1px solid #ccd2dc;border-radius:8px}
+</style><h1>WebView2 109 | CSSColor4 ${mode.toUpperCase()}</h1>
+<p>Diagnostic samples rendered by the installed DBX WebView2.</p>
+<p>Runtime: ${version.product} | Windows Server 2022 CI (not Windows 7)</p>
+<div class="grid">
+<div class="card"><b>OKLCH color</b><div id="oklch" class="swatch" style="background:oklch(0.62 0.22 260)"></div><code>oklch(0.62 0.22 260)</code></div>
+<div class="card"><b>sRGB color mix</b><div id="mix" class="swatch" style="background:color-mix(in srgb,red 50%,blue)"></div><code>color-mix(in srgb, red 50%, blue)</code></div>
+<div class="card"><b>Oklab color mix</b><div id="mixOklab" class="swatch" style="background:color-mix(in oklab,red 50%,blue)"></div><code>color-mix(in oklab, red 50%, blue)</code></div>
+</div><div class="note">CSS.supports: OKLCH=${capabilities.oklch}, sRGB mix=${capabilities.mix}, Oklab mix=${capabilities.mixOklab}<p>Unsupported declarations use a grey fallback. This is a capability probe, not a DBX interface screenshot.</p></div>`;
+      await cdp.send("Page.setDocumentContent", { frameId: frameTree.frame.id, html });
+      const samples = await cdp.send("Runtime.evaluate", {
+        awaitPromise: true, returnByValue: true,
+        expression: `new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(Object.fromEntries(['oklch','mix','mixOklab'].map(id=>[id,getComputedStyle(document.getElementById(id)).backgroundColor]))))))`,
+      });
+      assert.ok(!samples.exceptionDetails, JSON.stringify(samples.exceptionDetails));
+      result.computedColors = samples.result.value;
+      for (const value of Object.values(result.computedColors)) {
+        if (disabled) assert.equal(value, "rgb(230, 232, 236)");
+        else assert.notEqual(value, "rgb(230, 232, 236)");
+      }
+      await writeFile(join(output, `result-${mode}.json`), JSON.stringify(result, null, 2));
       const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" });
       await writeFile(join(output, `dbx-${mode}.png`), Buffer.from(screenshot.data, "base64"));
     } catch (error) {
-      console.log(`Screenshot ${mode}: ${error.message}`);
+      throw new Error(`Visual probe ${mode}: ${error.message}`);
     }
     console.log(JSON.stringify(result));
     return result;

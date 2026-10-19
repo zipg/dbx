@@ -1,143 +1,45 @@
-name: Win7 CSSColor4 Test Build
-
+name: Win7 CSSColor4 visual evidence
 on:
   push:
-    branches: [codex/win7-csscolor4-test]
+    branches: [codex/win7-csscolor4-evidence]
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: win7-csscolor4-test
-  cancel-in-progress: true
-
+  actions: read
 jobs:
-  build:
+  evidence:
     if: github.repository == 'zipg/dbx'
     runs-on: windows-2022
-    timeout-minutes: 120
-    env:
-      CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: -C debuginfo=line-tables-only -C target-feature=+crt-static
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v4
         with:
-          version: 10.34.7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22.23.3
-          cache: pnpm
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Setup Rust for Windows 7
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2026-07-22
-          components: rust-src
-
-      - name: Prepare Win7-compatible WebView2 loader
-        shell: pwsh
-        run: ./.github/scripts/prepare-webview2-win7-loader.ps1
-
-      - name: Prepare WebView2 109 fixed runtime
-        shell: pwsh
-        run: ./.github/scripts/prepare-webview2-win7-runtime.ps1
-
-      - name: Probe WebView2 109 fixed runtime
-        shell: pwsh
-        run: ./.github/scripts/assert-webview2-win7-runtime.ps1
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./ -> target"
-          shared-key: release-x86_64-win7-windows-msvc
-          add-rust-environment-hash-key: true
-          cache-targets: false
-          cache-on-failure: true
-
-      - name: Test CSSColor4 argument policy
-        shell: pwsh
-        run: |
-          rustc --edition 2021 --test src-tauri/src/webview2_legacy_css.rs -o "$env:RUNNER_TEMP/csscolor4-tests.exe"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$env:RUNNER_TEMP/csscolor4-tests.exe"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build frontend
-        run: pnpm build
-
-      - name: Build DBX for Windows 7
-        shell: pwsh
-        run: |
-          $env:TAURI_CONFIG = Get-Content src-tauri/tauri.webview2-win7-fixed.conf.json -Raw
-          cargo -Z host-config -Z target-applies-to-host -Z build-std=std,panic_abort --config .github/fixtures/win7-host-repro-config.toml build --locked --package dbx --release --features custom-protocol --target x86_64-win7-windows-msvc
-
-      - name: Audit Windows 7 binary
-        shell: pwsh
-        run: |
-          $binary = "target/x86_64-win7-windows-msvc/release/dbx.exe"
-          ./.github/scripts/assert-win7-pe-compat.ps1 -BinaryPath $binary
-          ./.github/scripts/assert-webview2-win7-loader.ps1 -BinaryPath $binary
-
-      - name: Bundle Windows 7 and Server 2012 R2 installer
-        shell: pwsh
-        run: |
-          pnpm tauri bundle --bundles nsis --target x86_64-win7-windows-msvc --config src-tauri/tauri.webview2-win7-fixed.conf.json
-
-          $generatedScript = "target/x86_64-win7-windows-msvc/release/nsis/x64/installer.nsi"
-          $script = Get-Content -LiteralPath $generatedScript -Raw
-          if (!$script.Contains('!define INSTALLWEBVIEW2MODE ""')) {
-            throw "Tauri did not render fixedRuntime as the expected empty NSIS install mode."
-          }
-
-          $installer = Get-ChildItem "target/x86_64-win7-windows-msvc/release/bundle/nsis" -Filter "*.exe" |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-          if (!$installer) {
-            throw "Windows 7 installer was not generated."
-          }
-          ./.github/scripts/assert-win7-installer-content.ps1 -InstallerPath $installer.FullName
-
-      - name: Stage test package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $installer = Get-ChildItem "target/x86_64-win7-windows-msvc/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
-          $name = "DBX_0.6.46_x64-win7-CSSColor4-test-setup.exe"
-          Copy-Item $installer.FullName "artifacts/$name"
-          $hash = (Get-FileHash "artifacts/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $name" | Set-Content "artifacts/$name.sha256" -Encoding ascii
-          Copy-Item docs/testing/win7-csscolor4/README.zh-CN.md artifacts/README.zh-CN.md
-          "Commit: $env:GITHUB_SHA`nRuntime: 109.0.1518.78`nTarget: x86_64-win7-windows-msvc`nUnsigned experimental installer" | Set-Content artifacts/BUILD-INFO.txt
-
-      - name: Probe real WebView2 109 CSSColor4 on and off
-        timeout-minutes: 5
-        shell: pwsh
-        run: node .github/scripts/win7-csscolor4-canary.mjs target/x86_64-win7-windows-msvc/release/dbx.exe src-tauri/webview2-fixed-runtime artifacts/canary
-
-      - name: Upload test installer and diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
+          node-version: '22.23.3'
+      - uses: actions/download-artifact@v5
         with:
           name: DBX-win7-CSSColor4-test
+          run-id: 39098197448
+          github-token: ${{ github.token }}
+          path: package
+      - name: Install existing tested package
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem package -Filter '*.exe' | Select-Object -First 1).FullName
+          $root = Join-Path $env:RUNNER_TEMP 'dbx-csscolor4-evidence'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$root") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Install failed: $($process.ExitCode)" }
+          "DBX_EVIDENCE_ROOT=$root" >> $env:GITHUB_ENV
+      - name: Render color samples using installed WebView2 109
+        shell: pwsh
+        run: node .github/scripts/win7-csscolor4-canary.mjs "$env:DBX_EVIDENCE_ROOT/dbx.exe" "$env:DBX_EVIDENCE_ROOT/webview2-fixed-runtime" evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Win7-CSSColor4-visual-evidence
           path: |
-            artifacts/*.exe
-            artifacts/*.sha256
-            artifacts/*.md
-            artifacts/*.txt
-            artifacts/canary/*.json
-            artifacts/canary/*.png
-            artifacts/canary/*.txt
-            artifacts/canary/*.log
-            artifacts/canary/startup-*/*.log
-          if-no-files-found: error
+            evidence/*.png
+            evidence/*.json
+            evidence/*.txt
+            evidence/*.log
           retention-days: 14
