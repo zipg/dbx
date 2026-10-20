@@ -38,8 +38,6 @@ jobs:
           git log -1 --format='%H %s'
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 10.27.0
 
       - uses: actions/setup-node@v6
         with:
