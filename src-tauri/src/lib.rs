@@ -15,6 +15,8 @@ mod startup_recovery;
 #[cfg(all(not(target_os = "windows"), not(test)))]
 #[path = "startup_recovery_noop.rs"]
 mod startup_recovery;
+#[cfg(target_os = "windows")]
+mod webview2_preflight;
 #[cfg(any(target_os = "windows", test))]
 mod webview2_recovery;
 mod window_state_guard;
@@ -624,21 +626,26 @@ fn apply_linux_webkit_rendering_workarounds() {
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     let Some(window) = app.get_webview_window("main") else {
         eprintln!("[WINDOW] show_main_window: no \"main\" webview window to reveal");
+        startup_recovery::record("show_main_window: main webview window is missing");
         return false;
     };
     if let Err(err) = window.show() {
         eprintln!("[WINDOW] show_main_window: show() failed: {err}");
+        startup_recovery::record(format!("show_main_window: show() failed: {err}"));
     }
     if let Err(err) = window.unminimize() {
         eprintln!("[WINDOW] show_main_window: unminimize() failed: {err}");
+        startup_recovery::record(format!("show_main_window: unminimize() failed: {err}"));
     }
     if let Err(err) = window.set_focus() {
         eprintln!("[WINDOW] show_main_window: set_focus() failed: {err}");
+        startup_recovery::record(format!("show_main_window: set_focus() failed: {err}"));
     }
     match window.is_visible() {
         Ok(visible) => visible,
         Err(err) => {
             eprintln!("[WINDOW] show_main_window: is_visible() failed: {err}");
+            startup_recovery::record(format!("show_main_window: is_visible() failed: {err}"));
             false
         }
     }
@@ -1704,6 +1711,17 @@ fn route_external_commands(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebView2 warm-up child mode: when a compatibility profile asks for a
+    // preflight, the parent re-launches this executable with
+    // DBX_WEBVIEW2_PREFLIGHT_CHILD=1. The child only creates and releases a
+    // WebView2 environment (forcing AV products to scan/trust msedgewebview2.exe)
+    // and exits before any Tauri/window setup. Doing this in a separate process
+    // isolates a hanging environment creation from the real startup attempt.
+    #[cfg(target_os = "windows")]
+    if webview2_preflight::run_child_if_requested() {
+        return;
+    }
+
     // Metadata/completion command chains nest very large async futures and can
     // exhaust tokio's default 2 MiB worker stack, which aborts the process with
     // STATUS_STACK_OVERFLOW. Share the roomier stack the backup worker and Web
@@ -1716,6 +1734,18 @@ pub fn run() {
     startup_recovery::initialize();
     rustls::crypto::aws_lc_rs::default_provider().install_default().expect("Failed to install rustls crypto provider");
     append_startup_probe("runtime prerequisites configured");
+    // Record the WebView2 / security-software environment before any window is
+    // created. This is the first thing to look at when a startup recovery chain
+    // fails: it distinguishes a missing/hooked WebView2 runtime from an AV
+    // product that blocks the child browser process.
+    #[cfg(target_os = "windows")]
+    for line in webview2_preflight::format_diagnostics(&webview2_preflight::collect_diagnostics()) {
+        append_startup_probe(line);
+    }
+    // Profile-specific pre-Tauri work (scan delay, WebView2 warm-up preflight).
+    // This must run before `Builder::default().build()` because wry reads the
+    // WebView2 environment variables during window creation.
+    startup_recovery::run_profile_pre_tauri_hooks();
     #[cfg(target_os = "linux")]
     apply_linux_webkit_rendering_workarounds();
 
@@ -1824,6 +1854,9 @@ pub fn run() {
                 append_startup_probe(format!(
                     "early main window show requested; {}",
                     main_window_probe_state(app.handle())
+                ));
+                startup_recovery::report_window_visibility_probe(startup_recovery::probe_main_window_visible(
+                    app.handle(),
                 ));
             }
 
@@ -2035,6 +2068,9 @@ pub fn run() {
                 append_startup_probe(format!(
                     "final main window show requested; {}",
                     main_window_probe_state(app.handle())
+                ));
+                startup_recovery::report_window_visibility_probe(startup_recovery::probe_main_window_visible(
+                    app.handle(),
                 ));
             }
             #[cfg(any(windows, target_os = "linux"))]

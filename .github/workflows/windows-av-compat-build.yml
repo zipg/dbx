@@ -19,8 +19,68 @@ permissions:
   contents: read
 
 jobs:
+  # Fast feedback on every push: type-check the whole Windows Tauri app and run
+  # the startup compatibility ladder unit tests. No bundling, no artifacts.
+  compile-check:
+    name: Windows compile check + startup unit tests
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-C debuginfo=0"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Show build revision
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          git log -1 --format='%H %s'
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Cargo check (Windows x64)
+        run: cargo check -p dbx --target x86_64-pc-windows-msvc --locked
+        timeout-minutes: 30
+
+      # Preferred guardrail: compile and run the pure startup ladder tests on
+      # Windows. Kept non-blocking for now because the first cold codegen run
+      # duration is unknown; the step duration is visible in the log. Once
+      # measured, this can be made a required step.
+      - name: Startup recovery unit tests (Windows x64)
+        run: cargo test -p dbx --lib --target x86_64-pc-windows-msvc --locked -- startup_recovery
+        timeout-minutes: 12
+        continue-on-error: true
+
+  # Full unsigned NSIS installer + portable zip. Only for explicit release
+  # builds: manual dispatch, or a push whose commit message contains the
+  # literal marker [release-build].
   windows-installer:
     name: Windows x64 NSIS installer + portable
+    needs: compile-check
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-build]')
     runs-on: windows-2022
     timeout-minutes: 180
     env:
@@ -64,7 +124,7 @@ jobs:
         run: |
           pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.av-test.conf.json --ci
 
-      - name: Collect installer, portable build and checksums
+      - name: Collect installer, portable build, collector script and checksums
         shell: pwsh
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
@@ -76,6 +136,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           $installerName = "DBX_${version}_${label}_x64-setup.exe"
           Copy-Item $installer.FullName (Join-Path artifacts $installerName)
+
+          # Ship the standalone client log collector with the Windows test package.
+          $collectorScript = "scripts/collect-dbx-startup-logs.ps1"
+          if (Test-Path -LiteralPath $collectorScript) {
+            Copy-Item -LiteralPath $collectorScript -Destination (Join-Path artifacts "collect-dbx-startup-logs.ps1") -Force
+            Write-Host "Included client log collector: collect-dbx-startup-logs.ps1"
+          } else {
+            Write-Warning "scripts/collect-dbx-startup-logs.ps1 is missing from the checkout; artifact will not contain the client log collector."
+          }
 
           $portableDir = Join-Path $env:RUNNER_TEMP "DBX-portable"
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
@@ -104,6 +173,7 @@ jobs:
           Label: $label
           Installer: unsigned NSIS setup (createUpdaterArtifacts disabled for this test build)
           Portable: DBX.exe + portable.dbx marker (portable data mode)
+          Client log collector: collect-dbx-startup-logs.ps1 (run on the affected Windows machine after reproducing the startup failure)
           Application SHA256: $((Get-FileHash (Join-Path $releaseDir 'dbx.exe') -Algorithm SHA256).Hash.ToLower())
           "@ | Set-Content artifacts/BUILD-INFO.txt
 
