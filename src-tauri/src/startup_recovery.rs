@@ -76,7 +76,7 @@ const STARTUP_LOG_BUFFER_CAPACITY: usize = 512;
 const STARTUP_WATCHDOG_DELAY: Duration = Duration::from_secs(60);
 /// Compatibility attempts are experiments: fail fast and move on.
 const COMPAT_WATCHDOG_DELAY: Duration = Duration::from_secs(30);
-const FAST_FAIL_GRACE: Duration = Duration::from_secs(10);
+const FAST_FAIL_GRACE: Duration = Duration::from_secs(6);
 #[cfg(target_os = "windows")]
 const RECOVERY_PARENT_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(target_os = "windows")]
@@ -113,6 +113,13 @@ struct CompatProfile {
     /// Relaunch through ShellExecuteW "runas" (UAC). Some AV products do not
     /// block browser child processes of elevated applications.
     elevated: bool,
+    /// Apply the per-user AppCompat "Windows 8" layer to msedgewebview2.exe
+    /// before the webview is created. Field evidence: this workaround unblocks
+    /// WebView2 startup when an injected DLL / code-integrity hook kills the
+    /// renderer (see `docs/win-av-compat-research.md`, WebView2Feedback #4094).
+    /// Reversible; removed again on final failure or when the user declines to
+    /// keep the working compatibility mode.
+    appcompat_win8: bool,
     /// Copy the executable to %TEMP% and relaunch from there: defeats path-based
     /// AV rules aimed at the install directory.
     temp_copy: bool,
@@ -124,6 +131,18 @@ struct CompatProfile {
 /// later profiles add progressively more aggressive workarounds. Profiles are
 /// only ever spawned after a detected startup failure, so their risk is bounded
 /// to machines where the app cannot start at all.
+///
+/// Ordering rationale (from `docs/win-av-compat-research.md`):
+/// - Cheapest/most likely AV-interference fixes first (sandbox/GPU/process flags).
+/// - `RendererCodeIntegrity` can only be disabled on WebView2 < 118; on newer
+///   runtimes the flag is a no-op, so it is bundled into later flag profiles
+///   instead of a dedicated attempt.
+/// - `--no-zygote`, `--disable-dev-shm-usage` and `--user-data-dir` are Linux /
+///   non-WebView2 mechanisms and are deliberately absent.
+/// - `--disable-breakpad` / `--disable-crash-reporter` are harmful on WebView2
+///   (Microsoft requires Crashpad for content to load) and are absent.
+/// - Each profile gets its own WebView2 user data directory: reusing one folder
+///   with different environment options can fail with ERROR_INVALID_STATE.
 const COMPAT_PROFILES: &[CompatProfile] = &[
     CompatProfile {
         index: 1,
@@ -135,58 +154,73 @@ const COMPAT_PROFILES: &[CompatProfile] = &[
         start_delay: Duration::ZERO,
         warmup: false,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: COMPAT_WATCHDOG_DELAY,
     },
     CompatProfile {
         index: 2,
         id: "renderer-code-integrity-off",
-        label_zh: "关闭 WebView2 渲染器代码完整性校验",
-        label_en: "WebView2 RendererCodeIntegrity off",
+        label_zh: "关闭 WebView2 渲染器代码完整性校验（仅旧版运行时有效）",
+        label_en: "WebView2 RendererCodeIntegrity off (old runtimes only)",
         user_data: CompatUserData::Isolated,
-        // RendererCodeIntegrity blocks unsigned modules inside the renderer; a
-        // security product that injects hooks there instead kills/hangs it.
         browser_args: "--no-sandbox --disable-gpu \
             --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
         start_delay: Duration::ZERO,
         warmup: false,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: COMPAT_WATCHDOG_DELAY,
     },
     CompatProfile {
         index: 3,
         id: "subprocess-sandbox-off",
-        label_zh: "关闭子进程/GPU 沙箱与崩溃上报",
-        label_en: "subprocess/GPU sandbox and crash reporter off",
+        label_zh: "关闭 GPU 沙箱与首次运行/后台网络",
+        label_en: "GPU/utility sandbox off, first-run and background network off",
         user_data: CompatUserData::Isolated,
-        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-zygote \
-            --disable-breakpad --disable-crash-reporter --no-first-run \
+        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-first-run \
             --disable-component-update --disable-background-networking \
             --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
         start_delay: Duration::ZERO,
         warmup: false,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: COMPAT_WATCHDOG_DELAY,
     },
     CompatProfile {
         index: 4,
-        id: "temp-user-data",
-        label_zh: "临时目录 WebView2 数据 + 关闭沙箱",
-        label_en: "temp WebView2 user data + sandbox off",
-        user_data: CompatUserData::Temp,
-        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-zygote \
-            --disable-breakpad --disable-crash-reporter \
+        id: "in-process-gpu",
+        label_zh: "GPU 进程内联（规避 GPU 子进程被拦截）",
+        label_en: "in-process GPU (avoid a blocked GPU child process)",
+        user_data: CompatUserData::Isolated,
+        browser_args: "--no-sandbox --disable-gpu-sandbox --in-process-gpu \
             --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
         start_delay: Duration::ZERO,
         warmup: false,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: COMPAT_WATCHDOG_DELAY,
     },
     CompatProfile {
         index: 5,
+        id: "temp-user-data",
+        label_zh: "临时目录 WebView2 数据 + 关闭沙箱",
+        label_en: "temp WebView2 user data + sandbox off",
+        user_data: CompatUserData::Temp,
+        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-first-run \
+            --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
+        start_delay: Duration::ZERO,
+        warmup: false,
+        elevated: false,
+        appcompat_win8: false,
+        temp_copy: false,
+        watchdog: COMPAT_WATCHDOG_DELAY,
+    },
+    CompatProfile {
+        index: 6,
         id: "av-scan-delay",
         label_zh: "等待杀软首次扫描完成（20 秒）后启动",
         label_en: "wait 20s for AV first-run scan",
@@ -196,61 +230,81 @@ const COMPAT_PROFILES: &[CompatProfile] = &[
         start_delay: Duration::from_secs(20),
         warmup: false,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: Duration::from_secs(45),
     },
     CompatProfile {
-        index: 6,
+        index: 7,
         id: "warmup-preflight",
         label_zh: "先预热启动 WebView2 再拉起主窗口",
         label_en: "warm up WebView2 in a helper process first",
         user_data: CompatUserData::Isolated,
-        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-zygote \
+        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-first-run \
             --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
         start_delay: Duration::ZERO,
         warmup: true,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: Duration::from_secs(40),
     },
     CompatProfile {
-        index: 7,
+        index: 8,
+        id: "appcompat-win8",
+        label_zh: "给 WebView2 子进程设置 Windows 8 兼容模式",
+        label_en: "AppCompat Windows 8 layer for msedgewebview2.exe",
+        user_data: CompatUserData::Isolated,
+        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-first-run \
+            --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
+        start_delay: Duration::ZERO,
+        warmup: false,
+        elevated: false,
+        appcompat_win8: true,
+        temp_copy: false,
+        watchdog: Duration::from_secs(40),
+    },
+    CompatProfile {
+        index: 9,
         id: "elevated-relaunch",
         label_zh: "以管理员权限重新启动（会弹 UAC）",
         label_en: "relaunch elevated (UAC prompt)",
         user_data: CompatUserData::Isolated,
-        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-zygote \
+        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-first-run \
             --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
         start_delay: Duration::ZERO,
         warmup: false,
         elevated: true,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: Duration::from_secs(45),
     },
     CompatProfile {
-        index: 8,
+        index: 10,
         id: "temp-relocated",
         label_zh: "从临时目录副本启动（规避安装目录规则）",
         label_en: "launch a copy from %TEMP%",
         user_data: CompatUserData::Isolated,
-        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-zygote \
+        browser_args: "--no-sandbox --disable-gpu --disable-gpu-sandbox --no-first-run \
             --disable-features=RendererCodeIntegrity,msSmartScreenProtection",
         start_delay: Duration::ZERO,
         warmup: false,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: true,
         watchdog: Duration::from_secs(45),
     },
     CompatProfile {
-        index: 9,
+        index: 11,
         id: "single-process-experimental",
-        label_zh: "单进程渲染模式（实验性，最后尝试）",
-        label_en: "single-process renderer (experimental)",
+        label_zh: "单进程渲染模式（实验性，WebView2 可能不支持）",
+        label_en: "single-process renderer (experimental, may be unsupported)",
         user_data: CompatUserData::Isolated,
-        browser_args: "--no-sandbox --disable-gpu --single-process --no-zygote",
+        browser_args: "--no-sandbox --disable-gpu --single-process",
         start_delay: Duration::ZERO,
         warmup: false,
         elevated: false,
+        appcompat_win8: false,
         temp_copy: false,
         watchdog: COMPAT_WATCHDOG_DELAY,
     },
@@ -332,11 +386,6 @@ fn compatibility_profile_path_from_inputs(
     (None, "unavailable")
 }
 
-#[cfg(target_os = "windows")]
-fn compatibility_profile_path() -> (Option<PathBuf>, &'static str) {
-    compatibility_profile_path_from_inputs(std::env::var_os("LOCALAPPDATA"), std::env::var_os("APPDATA"))
-}
-
 /// Returns the folder a profile wants for WebView2 user data plus a
 /// log-safe source class (never the actual user path).
 #[cfg_attr(not(test), allow(dead_code))]
@@ -350,12 +399,26 @@ fn compat_profile_user_data_path(
         CompatUserData::Default => (None, "default", false),
         CompatUserData::Isolated => {
             let (path, source) = compatibility_profile_path_from_inputs(local_appdata, windows_appdata);
-            (path, source, true)
+            (path.map(|path| path.join(profile_user_data_suffix(profile))), source, true)
         }
         CompatUserData::Temp => {
             let path = temp_dir.filter(|value| !value.is_empty()).map(PathBuf::from);
-            (path.map(|dir| dir.join(COMPATIBILITY_TEMP_PROFILE_DIR)), "temp", true)
+            (
+                path.map(|dir| dir.join(COMPATIBILITY_TEMP_PROFILE_DIR).join(profile_user_data_suffix(profile))),
+                "temp",
+                true,
+            )
         }
+    }
+}
+
+/// Every profile uses its own WebView2 user data directory: reusing one folder
+/// with different environment options can fail with ERROR_INVALID_STATE, and a
+/// stale profile from a crashed attempt must not poison the next one.
+fn profile_user_data_suffix(profile: Option<&CompatProfile>) -> String {
+    match profile {
+        Some(profile) => format!("profile-{}", profile.index),
+        None => "profile-standard".to_string(),
     }
 }
 
@@ -490,6 +553,7 @@ fn compatibility_profile_ready_record(profile: Option<&CompatProfile>, source: &
     format!("compat profile user data ready source={source} profile={id}")
 }
 
+#[cfg(test)]
 fn configure_recovery_child(command: &mut std::process::Command, parent_pid: u32) {
     command.env(RECOVERY_ATTEMPT_ENV, "1").env(RECOVERY_PARENT_PID_ENV, parent_pid.to_string());
 }
@@ -761,11 +825,18 @@ pub(crate) fn run_profile_pre_tauri_hooks() {
             std::thread::sleep(profile.start_delay);
             record("compat profile scan delay finished");
         }
+        if profile.appcompat_win8 {
+            record("compat profile applying AppCompat Windows 8 layer to msedgewebview2.exe");
+            match crate::windows_appcompat::set_win8_compat_layer() {
+                Ok(summary) => record(summary),
+                Err(error) => record(format!("appcompat win8 profile could not apply layer: {error}")),
+            }
+        }
         if profile.warmup {
             record(
                 "compat profile warm-up preflight starting (child process creates and releases a WebView2 environment)",
             );
-            let outcome = webview2_preflight::spawn_preflight_child(PREFLIGHT_CHILD_TIMEOUT);
+            let outcome = crate::webview2_preflight::spawn_preflight_child(PREFLIGHT_CHILD_TIMEOUT);
             record(format!(
                 "compat warm-up preflight finished spawned={} ok={} hresult={} elapsed_ms={} timed_out={} exit_code={:?}",
                 outcome.spawned,
@@ -988,10 +1059,17 @@ fn escalate_to_next_profile(outcome: StartupWaitOutcome) {
     let mut next_index = current.saturating_add(1).max(1);
     while next_index <= max_compat_profile_index() {
         let Some(profile) = compat_profile(next_index) else { break };
-        if profile.elevated && env_flag(COMPAT_ELEVATED_ENV) {
-            record(format!("compat profile {} skipped: elevated already attempted", profile.index));
-            next_index += 1;
-            continue;
+        if profile.elevated {
+            let already_attempted = env_flag(COMPAT_ELEVATED_ENV);
+            let already_elevated = crate::windows_appcompat::is_process_elevated();
+            if already_attempted || already_elevated {
+                record(format!(
+                    "compat profile {} skipped: already_elevated={already_elevated} elevated_attempted={already_attempted}",
+                    profile.index
+                ));
+                next_index += 1;
+                continue;
+            }
         }
         match launch_compat_profile(profile, &history) {
             Ok(launch) => {
@@ -1009,6 +1087,10 @@ fn escalate_to_next_profile(outcome: StartupWaitOutcome) {
     }
     record("all startup compatibility profiles failed");
     append_persisted_record("all startup compatibility profiles failed");
+    match crate::windows_appcompat::remove_win8_compat_layer() {
+        Ok(summary) => append_persisted_record(format!("compat cleanup: {summary}")),
+        Err(error) => append_persisted_record(format!("compat cleanup failed: {error}")),
+    }
     show_compatibility_failure_message(&history);
     std::process::exit(1);
 }
@@ -1144,6 +1226,9 @@ pub(crate) fn mark_frontend_ready(main_window_visible: bool) {
                 write_compatibility_marker(&profile).map(|()| "startup compatibility marker saved".to_string())
             } else {
                 remove_compatibility_marker();
+                if profile.appcompat_win8 {
+                    let _ = crate::windows_appcompat::remove_win8_compat_layer();
+                }
                 Ok("startup compatibility marker declined by user".to_string())
             };
             append_persisted_record(
@@ -1298,6 +1383,23 @@ mod tests {
                 "local_appdata",
             )
         );
+        let (profile_path, source, dedicated) = compat_profile_user_data_path(
+            compat_profile(1),
+            Some(OsString::from(r"C:\Users\test\AppData\Local")),
+            Some(OsString::from(r"C:\Users\test\AppData\Roaming")),
+            None,
+        );
+        assert_eq!(
+            profile_path,
+            Some(
+                PathBuf::from(r"C:\Users\test\AppData\Local")
+                    .join("com.dbx.app")
+                    .join("webview2-enterprise-compat")
+                    .join("profile-1")
+            )
+        );
+        assert_eq!(source, "local_appdata");
+        assert!(dedicated);
     }
 
     #[test]
@@ -1316,13 +1418,21 @@ mod tests {
 
     #[test]
     fn temp_profile_uses_temp_directory() {
+        let temp_profile = COMPAT_PROFILES.iter().find(|profile| profile.user_data == CompatUserData::Temp).unwrap();
         let (path, source, dedicated) = compat_profile_user_data_path(
-            Some(&COMPAT_PROFILES[3]),
+            Some(temp_profile),
             Some(OsString::from(r"C:\Users\test\AppData\Local")),
             Some(OsString::from(r"C:\Users\test\AppData\Roaming")),
             Some(OsString::from(r"C:\Users\test\AppData\Local\Temp")),
         );
-        assert_eq!(path, Some(PathBuf::from(r"C:\Users\test\AppData\Local\Temp").join("dbx-webview2-compat")));
+        assert_eq!(
+            path,
+            Some(
+                PathBuf::from(r"C:\Users\test\AppData\Local\Temp")
+                    .join("dbx-webview2-compat")
+                    .join(format!("profile-{}", temp_profile.index))
+            )
+        );
         assert_eq!(source, "temp");
         assert!(dedicated);
     }
@@ -1362,6 +1472,7 @@ mod tests {
         assert_eq!(ids.len(), COMPAT_PROFILES.len());
         assert_eq!(compat_profile(1).unwrap().user_data, CompatUserData::Isolated);
         assert!(COMPAT_PROFILES.iter().any(|profile| profile.warmup));
+        assert!(COMPAT_PROFILES.iter().any(|profile| profile.appcompat_win8));
         assert!(COMPAT_PROFILES.iter().any(|profile| profile.start_delay > std::time::Duration::ZERO));
         assert!(COMPAT_PROFILES.iter().any(|profile| profile.elevated));
         assert!(COMPAT_PROFILES.iter().any(|profile| profile.temp_copy));

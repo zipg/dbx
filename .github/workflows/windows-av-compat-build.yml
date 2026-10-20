@@ -184,3 +184,179 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
           retention-days: 14
+
+  # Alternative fix candidate for the affected Windows 10 + 360 安全卫士 client:
+  # bundle a modern WebView2 fixed runtime (133.0.3065.92 x64) instead of relying
+  # on the machine's Evergreen runtime. Tauri sets WEBVIEW2_BROWSER_EXECUTABLE_FOLDER
+  # for fixed-runtime bundles and the vendored wry patch honors it on Windows.
+  windows-installer-fixed-runtime:
+    name: Windows x64 NSIS installer (fixed WebView2 ${{ matrix.version }})
+    needs: compile-check
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-build]')
+    runs-on: windows-2022
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 133.0.3065.92
+            label: avcompat-fixed133
+            note: "modern runtime; RendererCodeIntegrity cannot be disabled (always on since 118)"
+          - version: 117.0.2045.60
+            label: avcompat-fixed117
+            note: "older runtime; last major branch where RendererCodeIntegrity can be disabled (startup ladder profile 2)"
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-C debuginfo=line-tables-only"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Show build revision
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          git log -1 --format='%H %s'
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      - name: Download WebView2 fixed runtime 133.0.3065.92 (x64)
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ matrix.version }}'
+          $cabName = "Microsoft.WebView2.FixedVersionRuntime.$version.x64.cab"
+          $url = "https://github.com/westinyang/WebView2RuntimeArchive/releases/download/$version/$cabName"
+          $cab = Join-Path $env:RUNNER_TEMP $cabName
+          if (!(Test-Path -LiteralPath $cab)) {
+            Invoke-WebRequest -Uri $url -OutFile $cab -MaximumRetryCount 3 -RetryIntervalSec 5
+          }
+
+          # Supply-chain check: the official fixed-runtime CAB is distributed by
+          # Microsoft. Edge update CABs are normally catalog-signed rather than
+          # embedded-Authenticode-signed, so accept either a valid Microsoft
+          # signature on the CAB itself, or (fallback) a valid Microsoft
+          # Authenticode signature on the extracted msedgewebview2.exe below.
+          $cabSignature = $null
+          try { $cabSignature = Get-AuthenticodeSignature -FilePath $cab -ErrorAction Stop } catch {
+            Write-Warning "Unable to read Authenticode signature of the cab: $($_.Exception.Message)"
+          }
+          $cabSignedByMicrosoft = $false
+          if ($null -ne $cabSignature -and
+              $cabSignature.Status -eq [System.Management.Automation.SignatureStatus]::Valid -and
+              $null -ne $cabSignature.SignerCertificate -and
+              $cabSignature.SignerCertificate.Subject -match 'Microsoft Corporation') {
+            $cabSignedByMicrosoft = $true
+          }
+          $hash = (Get-FileHash -LiteralPath $cab -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "fixed runtime cab sha256=$hash bytes=$((Get-Item -LiteralPath $cab).Length)"
+
+          $extract = Join-Path $env:RUNNER_TEMP 'wv2-fixed'
+          Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          & "$env:SystemRoot\System32\expand.exe" $cab '-F:*' $extract
+          if ($LASTEXITCODE -ne 0) { throw "expand.exe failed ($LASTEXITCODE)" }
+
+          $runtime = Join-Path $extract "Microsoft.WebView2.FixedVersionRuntime.$version.x64"
+          if (!(Test-Path -LiteralPath (Join-Path $runtime 'msedgewebview2.exe'))) {
+            $found = Get-ChildItem -LiteralPath $extract -Recurse -Filter 'msedgewebview2.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $runtime = $found.Directory.FullName } else { throw "fixed runtime is missing msedgewebview2.exe after extraction" }
+          }
+
+          $runtimeExe = Join-Path $runtime 'msedgewebview2.exe'
+          $exeSignature = Get-AuthenticodeSignature -FilePath $runtimeExe -ErrorAction Stop
+          if ($exeSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+              $null -eq $exeSignature.SignerCertificate -or
+              $exeSignature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+            throw "Extracted msedgewebview2.exe is not Microsoft-signed (status=$($exeSignature.Status))."
+          }
+          if (-not $cabSignedByMicrosoft) {
+            Write-Warning "Cab has no embedded Microsoft Authenticode signature (official Edge CABs are catalog-signed); validated the Microsoft signature on the extracted msedgewebview2.exe instead."
+          }
+          Write-Host "fixed runtime msedgewebview2.exe signer=$($exeSignature.SignerCertificate.Subject)"
+
+          $target = 'src-tauri/webview2-fixed-runtime'
+          Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+          Move-Item -LiteralPath $runtime -Destination $target
+          $runtimeFiles = @(Get-ChildItem -LiteralPath $target -Recurse -File)
+          $runtimeBytes = ($runtimeFiles | Measure-Object Length -Sum).Sum
+          $runtimeSummary = "$($runtimeFiles.Count) files, $([math]::Round($runtimeBytes / 1MB, 1)) MB"
+          Write-Host "runtime files: $runtimeSummary"
+          "WV2_FIXED_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WV2_CAB_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WV2_RUNTIME_SUMMARY=$runtimeSummary" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build unsigned Windows x64 installer (fixed WebView2 runtime)
+        shell: pwsh
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.fixed-runtime-test.conf.json --ci
+
+      - name: Collect fixed-runtime installer and checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $bundleDir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem $bundleDir -Filter "*.exe" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (!$installer) { throw "Missing NSIS installer in ${bundleDir}" }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $installerName = "DBX_${version}_${{ matrix.label }}_x64-setup.exe"
+          Copy-Item $installer.FullName (Join-Path artifacts $installerName)
+
+          $collectorScript = "scripts/collect-dbx-startup-logs.ps1"
+          if (Test-Path -LiteralPath $collectorScript) {
+            Copy-Item -LiteralPath $collectorScript -Destination (Join-Path artifacts "collect-dbx-startup-logs.ps1") -Force
+            Write-Host "Included client log collector: collect-dbx-startup-logs.ps1"
+          } else {
+            Write-Warning "scripts/collect-dbx-startup-logs.ps1 is missing from the checkout; artifact will not contain the client log collector."
+          }
+
+          $hash = Get-FileHash (Join-Path artifacts $installerName) -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $installerName" | Set-Content artifacts/SHA256SUMS.txt
+
+          $releaseDir = "target/x86_64-pc-windows-msvc/release"
+          @"
+          DBX Windows x64 AV-compatibility test package (unsigned, fixed WebView2 runtime)
+          Repository: ${{ github.repository }}
+          Commit: ${{ github.sha }}
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Version: $version
+          Label: ${{ matrix.label }}
+          WebView2 note: ${{ matrix.note }}
+          Installer: unsigned NSIS setup (createUpdaterArtifacts disabled for this test build)
+          WebView2 fixed runtime: $env:WV2_FIXED_VERSION (x64)
+          WebView2 fixed runtime cab SHA256: $env:WV2_CAB_SHA256
+          WebView2 fixed runtime files: $env:WV2_RUNTIME_SUMMARY
+          Client log collector: collect-dbx-startup-logs.ps1 (run on the affected Windows machine after reproducing the startup failure)
+          Application SHA256: $((Get-FileHash (Join-Path $releaseDir 'dbx.exe') -Algorithm SHA256).Hash.ToLower())
+          "@ | Set-Content artifacts/BUILD-INFO.txt
+
+      - name: Upload fixed-runtime artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBX-windows-x64-${{ matrix.label }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
