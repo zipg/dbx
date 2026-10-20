@@ -1,6 +1,9 @@
 name: Windows AV Compatibility Build
 
 on:
+  push:
+    branches:
+      - codex/windows-av-compat-startup
   workflow_dispatch:
     inputs:
       build_label:
@@ -109,7 +112,7 @@ jobs:
       - name: Upload Windows AV-compat artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: DBX-windows-x64-${{ inputs.build_label }}
+          name: DBX-windows-x64-${{ inputs.build_label || 'avcompat' }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 14
