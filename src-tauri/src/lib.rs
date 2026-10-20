@@ -1744,8 +1744,25 @@ pub fn run() {
     // fails: it distinguishes a missing/hooked WebView2 runtime from an AV
     // product that blocks the child browser process.
     #[cfg(target_os = "windows")]
-    for line in webview2_preflight::format_diagnostics(&webview2_preflight::collect_diagnostics()) {
-        append_startup_probe(line);
+    {
+        // Collect WebView2/AV diagnostics on a worker thread with a hard deadline:
+        // on machines where a security product hooks the WebView2 loader (the very
+        // machines this diagnostics targets) the version query must never be able
+        // to delay the real startup path. A timed-out worker is abandoned and dies
+        // with the process.
+        let (diagnostics_tx, diagnostics_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let diagnostics = webview2_preflight::collect_diagnostics();
+            let _ = diagnostics_tx.send(webview2_preflight::format_diagnostics(&diagnostics));
+        });
+        match diagnostics_rx.recv_timeout(std::time::Duration::from_secs(3)) {
+            Ok(lines) => {
+                for line in lines {
+                    append_startup_probe(line);
+                }
+            }
+            Err(_) => append_startup_probe("webview2 diagnostics timed out after 3s; continuing startup"),
+        }
     }
     // Profile-specific pre-Tauri work (scan delay, WebView2 warm-up preflight).
     // This must run before `Builder::default().build()` because wry reads the
