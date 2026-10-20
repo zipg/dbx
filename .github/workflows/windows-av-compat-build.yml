@@ -65,13 +65,14 @@ jobs:
         run: cargo check -p dbx --target x86_64-pc-windows-msvc --locked
         timeout-minutes: 30
 
-      # Preferred guardrail: compile and run the pure startup ladder tests on
-      # Windows. Kept non-blocking for now because the first cold codegen run
-      # duration is unknown; the step duration is visible in the log. Once
-      # measured, this can be made a required step.
+      # Guardrail: compile and run the pure startup ladder tests on Windows.
+      # The test harness needs a full debug codegen of the workspace (~12+ min
+      # cold) and timed out on every release build, delaying the installer jobs
+      # without producing results — so run it only on manual dispatch.
       - name: Startup recovery unit tests (Windows x64)
+        if: github.event_name == 'workflow_dispatch'
         run: cargo test -p dbx --lib --target x86_64-pc-windows-msvc --locked -- startup_recovery
-        timeout-minutes: 12
+        timeout-minutes: 30
         continue-on-error: true
 
   # Full unsigned NSIS installer + portable zip. Only for explicit release
@@ -181,6 +182,104 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DBX-windows-x64-${{ inputs.build_label || 'avcompat' }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  # Proper fix for machines where the Evergreen WebView2 runtime is missing:
+  # the default installer mode (downloadBootstrapper) needs internet at install
+  # time, so an offline/air-gapped or AV-blocked machine ends up without
+  # WebView2 and DBX can never create a window (which the startup watchdog used
+  # to misreport as a security-product block). offlineInstaller embeds the
+  # Microsoft Evergreen standalone installer (~127 MB) and installs it silently.
+  windows-installer-offline:
+    name: Windows x64 NSIS installer (WebView2 offline installer embedded)
+    needs: compile-check
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-build]')
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-C debuginfo=line-tables-only"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Show build revision
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          git log -1 --format='%H %s'
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build unsigned Windows x64 installer (WebView2 offline installer embedded)
+        shell: pwsh
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.offline-test.conf.json --ci
+
+      - name: Collect WebView2-offline installer and checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $bundleDir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem $bundleDir -Filter "*.exe" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (!$installer) { throw "Missing NSIS installer in ${bundleDir}" }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $installerName = "DBX_${version}_avcompat-offline_x64-setup.exe"
+          Copy-Item $installer.FullName (Join-Path artifacts $installerName)
+
+          $collectorScript = "scripts/collect-dbx-startup-logs.ps1"
+          if (Test-Path -LiteralPath $collectorScript) {
+            Copy-Item -LiteralPath $collectorScript -Destination (Join-Path artifacts "collect-dbx-startup-logs.ps1") -Force
+            Write-Host "Included client log collector: collect-dbx-startup-logs.ps1"
+          } else {
+            Write-Warning "scripts/collect-dbx-startup-logs.ps1 is missing from the checkout; artifact will not contain the client log collector."
+          }
+
+          $hash = Get-FileHash (Join-Path artifacts $installerName) -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $installerName" | Set-Content artifacts/SHA256SUMS.txt
+
+          $releaseDir = "target/x86_64-pc-windows-msvc/release"
+          @"
+          DBX Windows x64 AV-compatibility test package (unsigned, WebView2 offline installer embedded)
+          Repository: ${{ github.repository }}
+          Commit: ${{ github.sha }}
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Version: $version
+          Label: avcompat-offline
+          Installer: unsigned NSIS setup (createUpdaterArtifacts disabled for this test build)
+          WebView2 install mode: offlineInstaller (Microsoft Evergreen standalone installer embedded; no internet required)
+          Client log collector: collect-dbx-startup-logs.ps1 (run on the affected Windows machine after reproducing the startup failure)
+          Application SHA256: $((Get-FileHash (Join-Path $releaseDir 'dbx.exe') -Algorithm SHA256).Hash.ToLower())
+          "@ | Set-Content artifacts/BUILD-INFO.txt
+
+      - name: Upload WebView2-offline artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBX-windows-x64-avcompat-offline
           path: artifacts/*
           if-no-files-found: error
           retention-days: 14

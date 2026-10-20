@@ -1764,6 +1764,16 @@ pub fn run() {
             Err(_) => append_startup_probe("webview2 diagnostics timed out after 3s; continuing startup"),
         }
     }
+    // A missing WebView2 runtime is the #1 cause of "the window never appears" on
+    // enterprise Windows machines, and it used to be misdiagnosed as a security
+    // product blocking WebView2 (the compatibility ladder then retried for minutes).
+    // Detect it before Tauri tries to create the window and show one clear message.
+    #[cfg(target_os = "windows")]
+    if !webview2_preflight::is_runtime_available() {
+        startup_recovery::handle_missing_webview2_runtime();
+        return;
+    }
+
     // Profile-specific pre-Tauri work (scan delay, WebView2 warm-up preflight).
     // This must run before `Builder::default().build()` because wry reads the
     // WebView2 environment variables during window creation.

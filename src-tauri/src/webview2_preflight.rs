@@ -182,6 +182,41 @@ pub(crate) struct Diagnostics {
     pub windows_build: Option<String>,
 }
 
+/// True when a WebView2 runtime that Tauri can actually use is present.
+///
+/// This deliberately mirrors the exact check Tauri/wry performs before creating a
+/// window (`wry::webview_version()` → `GetAvailableCoreWebView2BrowserVersionString`
+/// with the configured browser folder), so DBX can distinguish two very different
+/// failures **before** building Tauri:
+///
+/// - **Runtime missing** — Tauri would show its generic English "Could not find the
+///   WebView2 Runtime" dialog and `Builder::build()` would fail; the startup
+///   compatibility ladder never runs. DBX should instead show a localized,
+///   actionable message (see `startup_recovery::handle_missing_webview2_runtime`).
+/// - **Runtime present but blocked/broken** — the version query succeeds, then
+///   environment creation hangs or the native window is destroyed; that is the
+///   real security-product case and the compatibility ladder handles it.
+///
+/// Fixed runtimes (env var or the folder Tauri's `fixedRuntime` bundling places
+/// next to the executable) are treated as a self-contained runtime.
+pub(crate) fn is_runtime_available() -> bool {
+    // Escape hatch: if the detection ever produces a false negative on a machine
+    // where DBX still works (unusual WebView2 deployment), this flag bypasses it.
+    if std::env::var_os("DBX_SKIP_WEBVIEW2_RUNTIME_CHECK").is_some_and(|value| value == "1") {
+        return true;
+    }
+    let fixed_runtime_folder = env_non_empty(BROWSER_EXE_FOLDER_ENV).map(std::path::PathBuf::from).or_else(|| {
+        let executable = std::env::current_exe().ok()?;
+        let folder = executable.parent()?.join("webview2-fixed-runtime");
+        folder.join("msedgewebview2.exe").is_file().then_some(folder)
+    });
+    if let Some(folder) = fixed_runtime_folder {
+        return folder.join("msedgewebview2.exe").is_file()
+            || api_webview2_version(Some(folder.to_string_lossy().as_ref())).is_some();
+    }
+    api_webview2_version(None).is_some()
+}
+
 /// Collect the startup diagnostics snapshot. Best-effort: this never panics and
 /// never propagates an OS error; a failed probe just leaves a field neutral.
 pub(crate) fn collect_diagnostics() -> Diagnostics {

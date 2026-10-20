@@ -1326,6 +1326,64 @@ fn show_recovery_failure_message() {
 #[cfg(not(target_os = "windows"))]
 fn show_recovery_failure_message() {}
 
+/// Opens the official WebView2 download page in the default browser. Used by the
+/// missing-runtime guidance; best-effort (the URL is fixed, no user input).
+#[cfg(target_os = "windows")]
+fn open_webview2_download_page() {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let url: Vec<u16> = "https://developer.microsoft.com/microsoft-edge/webview2/\0".encode_utf16().collect();
+    // SAFETY: both strings are NUL-terminated UTF-16 and outlive the call; the URL
+    // is a fixed constant, so no untrusted input reaches ShellExecuteW.
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            url.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+/// The machine has no usable WebView2 runtime. Show one explicit, actionable
+/// message instead of pretending this is an AV/enterprise compatibility problem
+/// (that misdiagnosis made a missing runtime look like a 360 block for a long
+/// time: the watchdog fired, the "enterprise compatibility" retry failed, and the
+/// failure dialog blamed the security software).
+pub(crate) fn handle_missing_webview2_runtime() {
+    record("webview2 runtime is not installed; skipping startup compatibility profiles");
+    persist_buffer();
+    #[cfg(target_os = "windows")]
+    {
+        let log_path =
+            startup_log_path().map(|path| path.display().to_string()).unwrap_or_else(|| "startup.log".to_string());
+        let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
+        let body = if locale.starts_with("zh") {
+            format!(
+                "DBX 需要 Microsoft Edge WebView2 运行时才能显示主界面，但当前系统没有检测到它。\n\n这不是 360/奇安信/卡巴斯基拦截 WebView2，而是运行时就缺失：\n\n• 点击“是”打开微软官方下载页面，选择 “Evergreen Standalone Installer” 下载安装（推荐 x64）；\n• 也可以安装 DBX 的离线安装包（内置 WebView2，无需联网）；\n• 若已安装 WebView2 仍出现本提示，请检查安全软件是否拦截了 WebView2 的安装/运行，把 dbx.exe 与 msedgewebview2.exe 加入信任区后重试。\n\n诊断日志：{log_path}"
+            )
+        } else {
+            format!(
+                "DBX needs the Microsoft Edge WebView2 Runtime to show its window, but it is not detected on this machine.\n\nThis is a missing runtime, not a 360/QiAnXin/Kaspersky block:\n\n• Click Yes to open the official download page and install the \"Evergreen Standalone Installer\" (x64 recommended);\n• Or use DBX's offline installer (WebView2 is bundled, no internet required);\n• If WebView2 is already installed, check whether a security product blocks its installer/runtime, add dbx.exe and msedgewebview2.exe to the trust list and retry.\n\nDiagnostics log: {log_path}"
+            )
+        };
+        let open_download = windows_message_box(
+            "DBX",
+            &body,
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON1,
+        ) == windows_sys::Win32::UI::WindowsAndMessaging::IDYES;
+        if open_download {
+            open_webview2_download_page();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

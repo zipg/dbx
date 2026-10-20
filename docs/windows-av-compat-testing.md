@@ -64,11 +64,26 @@ early main window show requested; main_window visible=Err(Runtime(FailedToReceiv
 - 运行期让 `WEBVIEW2_USER_DATA_FOLDER`、`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 真正生效（`--disable-features` 列表做并集合并，而不是替换）。
 - `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 在任意 Windows 版本都生效（让 Win10 也能用固定运行时）。
 
-## 3. 测试安装包
+## 3. 先区分两种失败：WebView2 缺失 vs 安全软件拦截
+
+这两种现象完全不同，处理方式也不同（客户 0.6.49 的问题实际是**运行时缺失**，被误读成了 360 拦截）：
+
+| 场景 | 判定依据 | 现象 | 处理 |
+|---|---|---|---|
+| **WebView2 运行时缺失** | `webview2_preflight runtime_version=<none>` / `runtime_install_kind=missing` | 旧版本会弹 Tauri 通用英文框 "Could not find the WebView2 Runtime…" 后进程退出（不会进入企业兼容模式）；修复后的版本会弹 DBX 中文提示，并可一键打开微软官方下载页 | 安装 WebView2 Runtime（官网 Evergreen Standalone Installer，或 DBX 离线安装包） |
+| **运行时存在但被拦截/损坏** | 版本号能读到，但 `startup.log` 有 30s 级卡顿、窗口探测 `FailedToReceiveMessage`、后续 profile 失败记录 | 主窗口不显示，60s 后进入启动兼容阶梯 | 信任区加入 `dbx.exe` + `msedgewebview2.exe`；让阶梯报告哪种方式有效 |
+
+为什么"缺失"不会被误判成企业兼容模式：Tauri 在创建窗口前会执行 `wry::webview_version()`，缺失时直接弹它自己的英文对话框并让 `Builder::build()` 失败；DBX 的启动 watchdog（触发企业兼容模式的逻辑）只在构建成功后才启动，所以根本到不了兼容阶梯。
+
+> 修复后的版本（启动前检测）：缺失时弹 DBX 中文指引（"是"打开官方下载页），不再跑 11 级阶梯；已安装但仍被拦截的机器照常走阶梯。可用 `DBX_SKIP_WEBVIEW2_RUNTIME_CHECK=1` 跳过该检测（逃生开关）。
+
+**当前已发出的标准测试包（commit 4951cf2a）不含这个提示改进**，但测试逻辑不受影响：**先让客户从官网安装 WebView2 Runtime，再运行标准包即可**。
+
+## 4. 测试安装包
 
 CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（均未签名，仅用于测试）：
 
-测试顺序：**先测标准包，fixed 包只用于兜底**。
+测试顺序：**先确认 WebView2 已安装，再测标准包；fixed 包只用于兜底**。`avcompat-offline`（内置 WebView2 Evergreen 离线安装器）的 CI job 已就绪，需要时用 `[release-build]` 触发，本次未构建。
 
 1. **`avcompat`（先测）**：不内置运行时的常规安装包，走的正是会失败的 Evergreen 路径。它用来验证启动兼容阶梯本身：主窗口起不来时 11 种方式会依次尝试，成功弹框会报出"第 N 种方式"，日志会记录每种方式的参数/阶段/HRESULT/杀软检测——这是判断 360 拦在哪一步、哪种绕过有效的唯一途径。
 2. **`avcompat-fixed117`（兜底）**：内置 WebView2 117.0.2045.60 固定运行时（安装时释放到安装目录 `webview2-fixed-runtime/`，启动时 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 指向它，绕开系统运行时）。与 Win7 离线包同思路，大概率能直接启动，但无法验证新的兼容阶梯；117 是最后一个还能关闭 RendererCodeIntegrity 的版本，界面样式正常。
@@ -82,7 +97,7 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
 
 > 固定运行时安装包体积较大（200MB+）且**不接收安全更新**，只作为企业环境逃生舱；确认可用后应推动把 DBX 与 `msedgewebview2.exe` 加入安全软件信任区，再换回常规版本。
 
-## 4. 客户端测试步骤
+## 5. 客户端测试步骤
 
 1. 先卸载旧的 DBX（保留数据），安装 `avcompat` 标准包（或直接解压便携版运行）。
 2. 打开 DBX（首次可能要等几分钟，窗口暂时不显示是阶梯在逐级尝试，属预期现象）：
@@ -92,7 +107,7 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
 3. 如果标准包在当前机器上无法启动且暂时需要先用起来，再安装 `avcompat-fixed117`（内置 WebView2 117 固定运行时，与 Win7 离线包同思路，样式正常）；仍不行再试 `avcompat-fixed133`。
 4. 收集日志：右键 `collect-dbx-startup-logs.ps1` →「使用 PowerShell 运行」，脚本会在桌面生成 `DBX-startup-logs-<机器名>-<时间>.zip`，包含 startup.log、webview2-recovery.log、WebView2 版本、杀软列表、进程信息、签名信息等。
 
-## 5. 回滚 / 清理
+## 6. 回滚 / 清理
 
 - 安装包可直接覆盖安装或从"应用和功能"卸载；卸载不会删除 `%APPDATA%\com.dbx.app` 下的数据。
 - 兼容阶梯可能写入以下内容，均可用以下方式清理：
@@ -101,7 +116,7 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
   - 兼容数据目录：`%LOCALAPPDATA%\com.dbx.app\webview2-enterprise-compat`、`%TEMP%\dbx-webview2-compat`、`%TEMP%\dbx-startup-compat`。
 - 常用关闭开关：`DBX_DISABLE_STARTUP_COMPAT=1`（不再自动尝试兼容方式）。
 
-## 6. 已知限制
+## 7. 已知限制
 
 - 测试安装包未签名（fork CI 无代码签名证书）。360 对未签名文件的策略可能更严格；正式版应使用签名构建。
 - 固定运行时版本不再接收安全更新，属于临时方案。
