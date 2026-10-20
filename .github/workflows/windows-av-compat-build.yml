@@ -1,0 +1,115 @@
+name: Windows AV Compatibility Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_label:
+        description: "Label appended to artifact names"
+        required: false
+        default: "avcompat"
+      ref:
+        description: "Optional ref to build (branch/tag/sha); defaults to the dispatch ref"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    name: Windows x64 NSIS installer + portable
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-C debuginfo=line-tables-only"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Show build revision
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          git log -1 --format='%H %s'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.27.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build unsigned Windows x64 installer
+        shell: pwsh
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.av-test.conf.json --ci
+
+      - name: Collect installer, portable build and checksums
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $label = "${{ inputs.build_label }}"
+          if ([string]::IsNullOrWhiteSpace($label)) { $label = "avcompat" }
+          $bundleDir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem $bundleDir -Filter "*.exe" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (!$installer) { throw "Missing NSIS installer in ${bundleDir}" }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $installerName = "DBX_${version}_${label}_x64-setup.exe"
+          Copy-Item $installer.FullName (Join-Path artifacts $installerName)
+
+          $portableDir = Join-Path $env:RUNNER_TEMP "DBX-portable"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          $releaseDir = "target/x86_64-pc-windows-msvc/release"
+          Copy-Item (Join-Path $releaseDir "dbx.exe") (Join-Path $portableDir "DBX.exe") -Force
+          Get-ChildItem $releaseDir -Filter "WebView2Loader.dll" | ForEach-Object { Copy-Item $_.FullName $portableDir }
+          Copy-Item LICENSE (Join-Path $portableDir "LICENSE") -Force
+          Copy-Item README.md (Join-Path $portableDir "README.md") -Force
+          Set-Content -Path (Join-Path $portableDir "portable.dbx") -Value "" -NoNewline
+          $portableZip = Join-Path artifacts "DBX_${version}_${label}_x64-portable.zip"
+          Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath $portableZip -Force
+
+          $hash = Get-FileHash (Join-Path artifacts $installerName) -Algorithm SHA256
+          $portableHash = Get-FileHash $portableZip -Algorithm SHA256
+          @(
+            "$($hash.Hash.ToLower())  $installerName",
+            "$($portableHash.Hash.ToLower())  DBX_${version}_${label}_x64-portable.zip"
+          ) | Set-Content artifacts/SHA256SUMS.txt
+
+          @"
+          DBX Windows x64 AV-compatibility test package (unsigned)
+          Repository: ${{ github.repository }}
+          Commit: ${{ github.sha }}
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Version: $version
+          Label: $label
+          Installer: unsigned NSIS setup (createUpdaterArtifacts disabled for this test build)
+          Portable: DBX.exe + portable.dbx marker (portable data mode)
+          Application SHA256: $((Get-FileHash (Join-Path $releaseDir 'dbx.exe') -Algorithm SHA256).Hash.ToLower())
+          "@ | Set-Content artifacts/BUILD-INFO.txt
+
+      - name: Upload Windows AV-compat artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBX-windows-x64-${{ inputs.build_label }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
