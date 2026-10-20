@@ -41,7 +41,7 @@ gh run download 39385806824 -R zipg/dbx -n DBX-windows-x64-avcompat -D /Users/st
 1. CI 三个 installer job 完成后下载、校验 SHA256、解包确认：
    - `dbx.exe` 内含新逻辑（可 `strings` 搜索 `compat profile` / `webview2_preflight`）；
    - fixed 包安装目录含 `webview2-fixed-runtime\msedgewebview2.exe`。
-2. 交给客户端按 `docs/windows-av-compat-testing.md` 测试（先 fixed117 → fixed133 → 标准包），回收 `startup.log` 与收集脚本 zip。
+2. 交给客户端按 `docs/windows-av-compat-testing.md` 测试（**先标准包**验证启动阶梯 → fixed117 → fixed133 兜底），回收 `startup.log` 与收集脚本 zip。
 3. 若 fixed117 可用：推动客户端把 DBX 与 `msedgewebview2.exe` 加入 360/奇安信信任区、关闭核晶防护，再回退官方签名版本。
 4. 后续可考虑：把诊断超时保护（本次后续提交）纳入正式构建；正式版需要代码签名。
 

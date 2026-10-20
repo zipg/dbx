@@ -68,9 +68,11 @@ early main window show requested; main_window visible=Err(Runtime(FailedToReceiv
 
 CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（均未签名，仅用于测试）：
 
-1. **`avcompat-fixed117`**（推荐先测）：内置 WebView2 117.0.2045.60 固定运行时。该版本仍可关闭 RendererCodeIntegrity，且比 109 新 8 个大版本，界面样式应正常。
-2. **`avcompat-fixed133`**：内置最新 WebView2 133.0.3065.92 固定运行时。样式最新；若安全软件是"注入渲染器"型问题，133 因强制代码完整性可能仍被拦截，此时会进入启动阶梯继续尝试。
-3. **`avcompat`**：不内置运行时的常规安装包，只用于验证启动兼容阶梯本身是否能在该机器上找到可用方式。
+测试顺序：**先测标准包，fixed 包只用于兜底**。
+
+1. **`avcompat`（先测）**：不内置运行时的常规安装包，走的正是会失败的 Evergreen 路径。它用来验证启动兼容阶梯本身：主窗口起不来时 11 种方式会依次尝试，成功弹框会报出"第 N 种方式"，日志会记录每种方式的参数/阶段/HRESULT/杀软检测——这是判断 360 拦在哪一步、哪种绕过有效的唯一途径。
+2. **`avcompat-fixed117`（兜底）**：内置 WebView2 117.0.2045.60 固定运行时（安装时释放到安装目录 `webview2-fixed-runtime/`，启动时 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 指向它，绕开系统运行时）。与 Win7 离线包同思路，大概率能直接启动，但无法验证新的兼容阶梯；117 是最后一个还能关闭 RendererCodeIntegrity 的版本，界面样式正常。
+3. **`avcompat-fixed133`（兜底，样式最新）**：内置 WebView2 133.0.3065.92 固定运行时。若问题是"渲染器被注入"，133 因强制代码完整性可能仍被拦截，此时会进入启动阶梯继续尝试。
 
 每个包内附：
 
@@ -82,12 +84,12 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
 
 ## 4. 客户端测试步骤
 
-1. 先卸载旧的 DBX（保留数据），安装 `avcompat-fixed117`。
-2. 打开 DBX：
-   - 正常显示主界面 → 成功。可直接查看 `%APPDATA%\com.dbx.app\startup.log`（或运行收集脚本）确认 `runtime_install_kind=fixed_runtime`。
-   - 若弹出"DBX 已通过第 N 种兼容启动方式成功显示主界面" → 记录 N 和方式名称（截图），选择"是"以便下次直接启动，并把 `startup.log` 发回。
+1. 先卸载旧的 DBX（保留数据），安装 `avcompat` 标准包（或直接解压便携版运行）。
+2. 打开 DBX（首次可能要等几分钟，窗口暂时不显示是阶梯在逐级尝试，属预期现象）：
+   - 正常显示主界面 → 说明标准路径可用，直接收集 `startup.log` 发回即可。
+   - 若弹出"DBX 已通过第 N 种兼容启动方式成功显示主界面" → **记录 N 和方式名称（截图）**，选择"是"以便下次直接启动，并把 `startup.log` 发回。这个 N 是本次适配最关键的信息。
    - 若弹出"已依次尝试…仍未显示" → 运行收集脚本，把生成的 zip 发回。
-3. 若 fixed117 不行，再试 `avcompat-fixed133`，然后试 `avcompat`（阶梯版）。
+3. 如果标准包在当前机器上无法启动且暂时需要先用起来，再安装 `avcompat-fixed117`（内置 WebView2 117 固定运行时，与 Win7 离线包同思路，样式正常）；仍不行再试 `avcompat-fixed133`。
 4. 收集日志：右键 `collect-dbx-startup-logs.ps1` →「使用 PowerShell 运行」，脚本会在桌面生成 `DBX-startup-logs-<机器名>-<时间>.zip`，包含 startup.log、webview2-recovery.log、WebView2 版本、杀软列表、进程信息、签名信息等。
 
 ## 5. 回滚 / 清理
