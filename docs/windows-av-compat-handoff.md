@@ -67,3 +67,11 @@ gh run download 39385806824 -R zipg/dbx -n DBX-windows-x64-avcompat -D /Users/st
   - 逃生开关：`DBX_SKIP_WEBVIEW2_RUNTIME_CHECK=1`。
 - 对客户/企业用户的推荐：优先发**离线安装包**（offlineInstaller）；普通安装包依赖联网下载 WebView2，在离线/受限网络环境容易装不上。
 - 本次未重新构建安装包；后续如要发版，建议构建 `avcompat-offline`（offline 模式 + 新检测），CI job 已就绪（push 带 `[release-build]` 即可）。
+
+## 2026-10-21 文案/求助体验优化（未打包）
+
+- 三个启动失败弹框统一为「一句话结论 + 错误码 + 编号步骤 + 求助区」，错误码：001 缺运行时 / 002 运行时损坏 / 003 安全软件拦截（阶梯耗尽）。
+- 失败时自动在桌面写 `DBX-启动诊断-<时间>.txt`（含 runtime_health、WebView2/杀软环境、日志路径、求助渠道），用户直接发送该文件即可；失败弹框"是"可打开日志所在文件夹。
+- 成功弹框简化为「已用第 N/11 种安全软件兼容启动方式启动」，只问是否记住方式。
+- 新增 `DBX_TRY_COMPAT_ON_BROKEN_WEBVIEW2=1`：运行时缺失/损坏时也可强行跑兼容阶梯（排障用）。
+- 说明：AV 兼容阶梯（11 个 profile）一直保留在分支中，最近的运行时检测提交只是"运行时不可用时默认不跑阶梯"，并没有删除阶梯。

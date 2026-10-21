@@ -1775,18 +1775,26 @@ pub fn run() {
     // minutes). Detect it before Tauri tries to create the window and show one
     // clear, actionable message instead.
     #[cfg(target_os = "windows")]
-    match webview2_runtime_health {
-        webview2_preflight::WebView2RuntimeHealth::Missing => {
-            startup_recovery::handle_missing_webview2_runtime();
-            return;
+    {
+        // Diagnostic escape hatch: a user who wants the AV compatibility ladder to
+        // run even though the WebView2 runtime is missing/damaged can force it.
+        // This makes no difference on a healthy runtime but lets support reproduce
+        // "try everything" behaviour on a broken machine.
+        let force_compat_on_broken_runtime =
+            std::env::var_os("DBX_TRY_COMPAT_ON_BROKEN_WEBVIEW2").is_some_and(|value| value == "1");
+        match webview2_runtime_health {
+            webview2_preflight::WebView2RuntimeHealth::Missing if !force_compat_on_broken_runtime => {
+                startup_recovery::handle_missing_webview2_runtime();
+                return;
+            }
+            webview2_preflight::WebView2RuntimeHealth::RegisteredButDamaged if !force_compat_on_broken_runtime => {
+                startup_recovery::handle_damaged_webview2_runtime(
+                    webview2_preflight::collect_diagnostics().runtime_version.as_deref(),
+                );
+                return;
+            }
+            _ => {}
         }
-        webview2_preflight::WebView2RuntimeHealth::RegisteredButDamaged => {
-            startup_recovery::handle_damaged_webview2_runtime(
-                webview2_preflight::collect_diagnostics().runtime_version.as_deref(),
-            );
-            return;
-        }
-        webview2_preflight::WebView2RuntimeHealth::Available => {}
     }
 
     // Profile-specific pre-Tauri work (scan delay, WebView2 warm-up preflight).

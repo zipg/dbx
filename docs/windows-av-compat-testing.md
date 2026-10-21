@@ -120,7 +120,22 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
 3. 如果标准包在当前机器上无法启动且暂时需要先用起来，再安装 `avcompat-fixed117`（内置 WebView2 117 固定运行时，与 Win7 离线包同思路，样式正常）；仍不行再试 `avcompat-fixed133`。
 4. 收集日志：右键 `collect-dbx-startup-logs.ps1` →「使用 PowerShell 运行」，脚本会在桌面生成 `DBX-startup-logs-<机器名>-<时间>.zip`，包含 startup.log、webview2-recovery.log、WebView2 版本、杀软列表、进程信息、签名信息等。
 
-## 7. 回滚 / 清理
+## 7. 错误码与求助方式（修复后版本）
+
+所有启动失败弹框都会带一个稳定错误码，方便用户截图、客服快速定位：
+
+| 错误码 | 含义 | 弹框行为 |
+|---|---|---|
+| `DBX-STARTUP-001` | 未安装 WebView2 运行时 | 提示安装步骤；"是"打开微软官方下载页 |
+| `DBX-STARTUP-002` | WebView2 注册信息存在但文件缺失/损坏 | 提示覆盖安装修复；"是"打开微软官方下载页 |
+| `DBX-STARTUP-003` | 安全软件拦截 WebView2，11 种兼容启动方式全部失败 | 提示加信任区/关核晶防护；"是"打开启动日志所在文件夹 |
+
+- 弹框会**自动在桌面生成诊断文件** `DBX-启动诊断-<时间>.txt`（错误码、结论、WebView2/杀软环境、日志路径、求助方式），用户只需把该文件和 `startup.log` 一起发回，不需要自己去 `%APPDATA%` 找日志。
+- 日志中同时记录 `webview2 runtime_health=` 和失败阶段/HRESULT。
+- 默认情况下运行时缺失/损坏时**不再跑 11 级兼容阶梯**（无法修复运行时且会误导为安全软件问题）；如需强行复现"全都试一遍"，设置环境变量 `DBX_TRY_COMPAT_ON_BROKEN_WEBVIEW2=1`。
+- 文案上把"企业环境兼容模式"统一改为「安全软件兼容启动方式」，避免用户误以为和公司域环境/企业策略有关。
+
+## 8. 回滚 / 清理
 
 - 安装包可直接覆盖安装或从"应用和功能"卸载；卸载不会删除 `%APPDATA%\com.dbx.app` 下的数据。
 - 兼容阶梯可能写入以下内容，均可用以下方式清理：
@@ -129,7 +144,7 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
   - 兼容数据目录：`%LOCALAPPDATA%\com.dbx.app\webview2-enterprise-compat`、`%TEMP%\dbx-webview2-compat`、`%TEMP%\dbx-startup-compat`。
 - 常用关闭开关：`DBX_DISABLE_STARTUP_COMPAT=1`（不再自动尝试兼容方式）。
 
-## 8. 已知限制
+## 9. 已知限制
 
 - 测试安装包未签名（fork CI 无代码签名证书）。360 对未签名文件的策略可能更严格；正式版应使用签名构建。
 - 固定运行时版本不再接收安全更新，属于临时方案。
