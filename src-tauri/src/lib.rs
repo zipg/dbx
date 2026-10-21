@@ -11,6 +11,8 @@ mod migration_gate;
 mod models;
 mod plugin_ui_protocol;
 #[cfg(any(target_os = "windows", test))]
+mod startup_messages;
+#[cfg(any(target_os = "windows", test))]
 mod startup_recovery;
 #[cfg(all(not(target_os = "windows"), not(test)))]
 #[path = "startup_recovery_noop.rs"]
