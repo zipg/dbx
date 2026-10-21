@@ -182,39 +182,118 @@ pub(crate) struct Diagnostics {
     pub windows_build: Option<String>,
 }
 
-/// True when a WebView2 runtime that Tauri can actually use is present.
+/// Health of the WebView2 runtime as seen by this process.
 ///
-/// This deliberately mirrors the exact check Tauri/wry performs before creating a
-/// window (`wry::webview_version()` → `GetAvailableCoreWebView2BrowserVersionString`
-/// with the configured browser folder), so DBX can distinguish two very different
-/// failures **before** building Tauri:
-///
-/// - **Runtime missing** — Tauri would show its generic English "Could not find the
-///   WebView2 Runtime" dialog and `Builder::build()` would fail; the startup
-///   compatibility ladder never runs. DBX should instead show a localized,
-///   actionable message (see `startup_recovery::handle_missing_webview2_runtime`).
-/// - **Runtime present but blocked/broken** — the version query succeeds, then
-///   environment creation hangs or the native window is destroyed; that is the
-///   real security-product case and the compatibility ladder handles it.
-///
-/// Fixed runtimes (env var or the folder Tauri's `fixedRuntime` bundling places
-/// next to the executable) are treated as a self-contained runtime.
-pub(crate) fn is_runtime_available() -> bool {
-    // Escape hatch: if the detection ever produces a false negative on a machine
-    // where DBX still works (unusual WebView2 deployment), this flag bypasses it.
-    if std::env::var_os("DBX_SKIP_WEBVIEW2_RUNTIME_CHECK").is_some_and(|value| value == "1") {
-        return true;
+/// Distinguishing these three states is what keeps DBX from blaming security
+/// software for a broken runtime installation:
+/// - [`Available`](WebView2RuntimeHealth::Available): Tauri can create a window.
+/// - [`Missing`](WebView2RuntimeHealth::Missing): nothing registered; Tauri would
+///   show its generic English dialog and fail. Show install guidance.
+/// - [`RegisteredButDamaged`](WebView2RuntimeHealth::RegisteredButDamaged): a
+///   version is registered (so Tauri's own version check passes!) but the runtime
+///   files are gone/corrupted. This is the state that produced the misleading
+///   "enterprise compatibility mode" dialog on one affected client: the window
+///   creation failed for minutes while DBX blamed AV blocking. Tell the user to
+///   repair WebView2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WebView2RuntimeHealth {
+    Available,
+    Missing,
+    RegisteredButDamaged,
+}
+
+impl WebView2RuntimeHealth {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Missing => "missing",
+            Self::RegisteredButDamaged => "registered_but_damaged",
+        }
     }
-    let fixed_runtime_folder = env_non_empty(BROWSER_EXE_FOLDER_ENV).map(std::path::PathBuf::from).or_else(|| {
+}
+
+/// Directory names that may host the Evergreen runtime: per-machine 32/64-bit and
+/// per-user installations.
+fn evergreen_application_roots() -> Vec<(std::path::PathBuf, &'static str)> {
+    let mut roots = Vec::new();
+    if let Some(program_files_x86) = env_non_empty_os("ProgramFiles(x86)") {
+        roots.push((
+            std::path::PathBuf::from(program_files_x86).join("Microsoft\\EdgeWebView\\Application"),
+            "program_files_x86",
+        ));
+    }
+    if let Some(program_files) = env_non_empty_os("ProgramFiles") {
+        roots.push((
+            std::path::PathBuf::from(program_files).join("Microsoft\\EdgeWebView\\Application"),
+            "program_files",
+        ));
+    }
+    if let Some(local_appdata) = env_non_empty_os("LOCALAPPDATA") {
+        roots.push((
+            std::path::PathBuf::from(local_appdata).join("Microsoft\\EdgeWebView\\Application"),
+            "local_appdata",
+        ));
+    }
+    roots
+}
+
+/// Fixed runtime folder: `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`, or the folder
+/// Tauri's `fixedRuntime` bundling puts next to the executable.
+fn fixed_runtime_folder() -> Option<std::path::PathBuf> {
+    let from_env = env_non_empty_os(BROWSER_EXE_FOLDER_ENV).map(std::path::PathBuf::from);
+    from_env.or_else(|| {
         let executable = std::env::current_exe().ok()?;
         let folder = executable.parent()?.join("webview2-fixed-runtime");
         folder.join("msedgewebview2.exe").is_file().then_some(folder)
-    });
-    if let Some(folder) = fixed_runtime_folder {
-        return folder.join("msedgewebview2.exe").is_file()
-            || api_webview2_version(Some(folder.to_string_lossy().as_ref())).is_some();
+    })
+}
+
+fn has_fixed_runtime_files(folder: &std::path::Path) -> bool {
+    folder.join("msedgewebview2.exe").is_file()
+}
+
+/// Classify the WebView2 runtime state before Tauri is built.
+///
+/// `RegisteredButDamaged` requires both (a) a registry/loader-reported version and
+/// (b) no `msedgewebview2.exe` under any known `EdgeWebView\Application` root — a
+/// strong, false-positive-safe signal. A version directory mismatch alone counts
+/// as available (WebView2 updater keeps the previous version around).
+pub(crate) fn runtime_health() -> WebView2RuntimeHealth {
+    // Escape hatch: if the detection ever produces a false positive on a machine
+    // where DBX still works (unusual WebView2 deployment), this flag bypasses it.
+    if std::env::var_os("DBX_SKIP_WEBVIEW2_RUNTIME_CHECK").is_some_and(|value| value == "1") {
+        return WebView2RuntimeHealth::Available;
     }
-    api_webview2_version(None).is_some()
+    if let Some(folder) = fixed_runtime_folder() {
+        return if has_fixed_runtime_files(&folder) {
+            WebView2RuntimeHealth::Available
+        } else {
+            WebView2RuntimeHealth::RegisteredButDamaged
+        };
+    }
+    let registered_version =
+        registry_webview2_version().map(|(version, _source)| version).or_else(|| api_webview2_version(None));
+    let Some(registered_version) = registered_version else {
+        return WebView2RuntimeHealth::Missing;
+    };
+    let mut runtime_files_found = false;
+    for (root, _source) in evergreen_application_roots() {
+        if root.join(&registered_version).join("msedgewebview2.exe").is_file() {
+            return WebView2RuntimeHealth::Available;
+        }
+        let Ok(entries) = std::fs::read_dir(&root) else { continue };
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("msedgewebview2.exe");
+            if candidate.is_file() {
+                runtime_files_found = true;
+            }
+        }
+    }
+    if runtime_files_found {
+        WebView2RuntimeHealth::Available
+    } else {
+        WebView2RuntimeHealth::RegisteredButDamaged
+    }
 }
 
 /// Collect the startup diagnostics snapshot. Best-effort: this never panics and

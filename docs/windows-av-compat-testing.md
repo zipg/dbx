@@ -64,22 +64,35 @@ early main window show requested; main_window visible=Err(Runtime(FailedToReceiv
 - 运行期让 `WEBVIEW2_USER_DATA_FOLDER`、`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 真正生效（`--disable-features` 列表做并集合并，而不是替换）。
 - `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 在任意 Windows 版本都生效（让 Win10 也能用固定运行时）。
 
-## 3. 先区分两种失败：WebView2 缺失 vs 安全软件拦截
+## 3. 结论（2026-10-21 现场验证）：根因是 WebView2 运行时缺失/损坏
+
+客户装**官网 Win10 离线包**（`DBX_0.6.49_x64-offline-setup.exe`，内嵌 WebView2 安装器）后**可正常启动**，未再出现企业兼容模式。至此确认：
+
+- 之前反复出现的"已尝试企业环境兼容模式，但主窗口仍未显示"**不是 360 等安全软件拦截**，而是 WebView2 运行时缺失/损坏：
+  - 官方 30MB 安装包用 `downloadBootstrapper` 模式，安装时需要联网下载 WebView2 引导器；在客户机器上这一步没有真正装成（离线/被拦/装成 per-user 等），或运行时随后被破坏/清理；
+  - Tauri 的运行时检测只读注册表，**注册信息还在但运行时文件损坏时检测仍会通过**，随后窗口创建卡 35 秒、窗口被销毁 → 触发 DBX 的 60s watchdog → 弹出误导性的"企业兼容模式"失败提示。
+- Win7 包能用，是因为它把 WebView2 109 固定运行时打包进安装目录、完全不依赖系统运行时。
+- 我们的 30MB 测试包报"缺少 WebView2"，是因为它同样是 `downloadBootstrapper` 模式，而当时系统已经没有可用的运行时注册/文件。
+
+产品结论：对中文企业环境，**默认提供/推荐离线安装包（offlineInstaller）**，并且 DBX 要在启动前把"运行时缺失/损坏"说清楚，而不是让用户以为被安全软件拦截。
+
+## 4. 先区分两种失败：WebView2 缺失 vs 安全软件拦截
 
 这两种现象完全不同，处理方式也不同（客户 0.6.49 的问题实际是**运行时缺失**，被误读成了 360 拦截）：
 
-| 场景 | 判定依据 | 现象 | 处理 |
+| 场景 | 判定依据（修复后日志） | 现象 | 处理 |
 |---|---|---|---|
-| **WebView2 运行时缺失** | `webview2_preflight runtime_version=<none>` / `runtime_install_kind=missing` | 旧版本会弹 Tauri 通用英文框 "Could not find the WebView2 Runtime…" 后进程退出（不会进入企业兼容模式）；修复后的版本会弹 DBX 中文提示，并可一键打开微软官方下载页 | 安装 WebView2 Runtime（官网 Evergreen Standalone Installer，或 DBX 离线安装包） |
-| **运行时存在但被拦截/损坏** | 版本号能读到，但 `startup.log` 有 30s 级卡顿、窗口探测 `FailedToReceiveMessage`、后续 profile 失败记录 | 主窗口不显示，60s 后进入启动兼容阶梯 | 信任区加入 `dbx.exe` + `msedgewebview2.exe`；让阶梯报告哪种方式有效 |
+| **WebView2 运行时缺失** | `webview2 runtime_health=missing` | 旧版本弹 Tauri 通用英文框后进程退出（不会进入企业兼容模式）；修复版本弹 DBX 中文提示，可一键打开微软官方下载页 | 安装 WebView2 Runtime（官网 Evergreen Standalone Installer，或 DBX 离线包） |
+| **WebView2 注册存在但文件损坏/被删**（本次客户的实际状态） | `webview2 runtime_health=registered_but_damaged` + `runtime_version=<版本>` | 旧版本：版本检测通过 → 窗口创建卡 30s+ / 窗口销毁 → 60s 后进企业兼容阶梯（误导为 AV 拦截）；修复版本弹"WebView2 已损坏，请覆盖安装修复"并给出下载页 | 重新安装/修复 WebView2（覆盖安装即可），或使用 DBX 离线包 |
+| **运行时正常但被安全软件拦截** | `runtime_health=available`，但 `startup.log` 有 30s 级卡顿、窗口探测 `FailedToReceiveMessage`、阶梯部分 profile 失败 | 主窗口不显示，60s 后进入启动兼容阶梯 | 信任区加入 `dbx.exe` + `msedgewebview2.exe`；让阶梯报告哪种方式有效 |
 
 为什么"缺失"不会被误判成企业兼容模式：Tauri 在创建窗口前会执行 `wry::webview_version()`，缺失时直接弹它自己的英文对话框并让 `Builder::build()` 失败；DBX 的启动 watchdog（触发企业兼容模式的逻辑）只在构建成功后才启动，所以根本到不了兼容阶梯。
 
-> 修复后的版本（启动前检测）：缺失时弹 DBX 中文指引（"是"打开官方下载页），不再跑 11 级阶梯；已安装但仍被拦截的机器照常走阶梯。可用 `DBX_SKIP_WEBVIEW2_RUNTIME_CHECK=1` 跳过该检测（逃生开关）。
+> 修复后的版本（启动前检测）：缺失或"注册但损坏"时弹 DBX 中文指引（"是"打开官方下载页），不再跑 11 级阶梯；运行时正常但被拦截的机器照常走阶梯。可用 `DBX_SKIP_WEBVIEW2_RUNTIME_CHECK=1` 跳过该检测（逃生开关）。
 
 **当前已发出的标准测试包（commit 4951cf2a）不含这个提示改进**，但测试逻辑不受影响：**先让客户从官网安装 WebView2 Runtime，再运行标准包即可**。
 
-## 4. 测试安装包
+## 5. 测试安装包
 
 CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（均未签名，仅用于测试）：
 
@@ -97,7 +110,7 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
 
 > 固定运行时安装包体积较大（200MB+）且**不接收安全更新**，只作为企业环境逃生舱；确认可用后应推动把 DBX 与 `msedgewebview2.exe` 加入安全软件信任区，再换回常规版本。
 
-## 5. 客户端测试步骤
+## 6. 客户端测试步骤
 
 1. 先卸载旧的 DBX（保留数据），安装 `avcompat` 标准包（或直接解压便携版运行）。
 2. 打开 DBX（首次可能要等几分钟，窗口暂时不显示是阶梯在逐级尝试，属预期现象）：
@@ -107,7 +120,7 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
 3. 如果标准包在当前机器上无法启动且暂时需要先用起来，再安装 `avcompat-fixed117`（内置 WebView2 117 固定运行时，与 Win7 离线包同思路，样式正常）；仍不行再试 `avcompat-fixed133`。
 4. 收集日志：右键 `collect-dbx-startup-logs.ps1` →「使用 PowerShell 运行」，脚本会在桌面生成 `DBX-startup-logs-<机器名>-<时间>.zip`，包含 startup.log、webview2-recovery.log、WebView2 版本、杀软列表、进程信息、签名信息等。
 
-## 6. 回滚 / 清理
+## 7. 回滚 / 清理
 
 - 安装包可直接覆盖安装或从"应用和功能"卸载；卸载不会删除 `%APPDATA%\com.dbx.app` 下的数据。
 - 兼容阶梯可能写入以下内容，均可用以下方式清理：
@@ -116,7 +129,7 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
   - 兼容数据目录：`%LOCALAPPDATA%\com.dbx.app\webview2-enterprise-compat`、`%TEMP%\dbx-webview2-compat`、`%TEMP%\dbx-startup-compat`。
 - 常用关闭开关：`DBX_DISABLE_STARTUP_COMPAT=1`（不再自动尝试兼容方式）。
 
-## 7. 已知限制
+## 8. 已知限制
 
 - 测试安装包未签名（fork CI 无代码签名证书）。360 对未签名文件的策略可能更严格；正式版应使用签名构建。
 - 固定运行时版本不再接收安全更新，属于临时方案。

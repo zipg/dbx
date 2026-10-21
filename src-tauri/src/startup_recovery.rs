@@ -1323,6 +1323,48 @@ fn show_recovery_failure_message() {
     );
 }
 
+/// A WebView2 version is registered but its files are missing/corrupted.
+///
+/// Tauri's own version check (`wry::webview_version()`) only reads the registry,
+/// so it passes in this state; window creation then fails/hangs and the startup
+/// watchdog used to retry with "enterprise compatibility mode" — which cannot fix
+/// broken runtime files and made an installation problem look like AV blocking.
+/// This state was observed on a real client machine; show repair guidance instead
+/// of running the compatibility ladder.
+pub(crate) fn handle_damaged_webview2_runtime(runtime_version: Option<&str>) {
+    record(format!(
+        "webview2 runtime is registered but its files are missing or corrupted (version={}); skipping startup compatibility profiles",
+        runtime_version.unwrap_or("<unknown>")
+    ));
+    persist_buffer();
+    #[cfg(target_os = "windows")]
+    {
+        let log_path =
+            startup_log_path().map(|path| path.display().to_string()).unwrap_or_else(|| "startup.log".to_string());
+        let version = runtime_version.unwrap_or("unknown");
+        let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
+        let body = if locale.starts_with("zh") {
+            format!(
+                "检测到 WebView2 运行时的注册信息（版本 {version}），但它的程序文件缺失或已损坏，因此 DBX 无法显示主界面。\n\n这通常由以下原因造成：安全软件误删/隔离、清理工具删除、WebView2 更新中断。\n\n请重新安装/修复 WebView2 运行时：\n• 点击“是”打开微软官方下载页面，下载 “Evergreen Standalone Installer” 覆盖安装；\n• 或使用 DBX 的离线安装包（内置 WebView2，安装时自动修复）；\n• 若安全软件拦截安装，请先把 dbx.exe、msedgewebview2.exe 加入信任区。\n\n诊断日志：{log_path}"
+            )
+        } else {
+            format!(
+                "The WebView2 runtime is registered (version {version}) but its files are missing or corrupted, so DBX cannot show its window.\n\nTypical causes: a security product quarantined files, a cleanup tool removed them, or a WebView2 update was interrupted.\n\nRepair the WebView2 Runtime:\n• Click Yes to open the official download page and install the \"Evergreen Standalone Installer\" over the existing one;\n• Or use DBX's offline installer (WebView2 is bundled and repaired during setup);\n• If a security product blocks the install, add dbx.exe and msedgewebview2.exe to its trust list first.\n\nDiagnostics log: {log_path}"
+            )
+        };
+        let open_download = windows_message_box(
+            "DBX",
+            &body,
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_YESNO
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_DEFBUTTON1,
+        ) == windows_sys::Win32::UI::WindowsAndMessaging::IDYES;
+        if open_download {
+            open_webview2_download_page();
+        }
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 fn show_recovery_failure_message() {}
 

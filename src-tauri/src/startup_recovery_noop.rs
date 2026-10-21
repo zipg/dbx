@@ -17,3 +17,5 @@ pub(crate) fn probe_main_window_visible<R: tauri::Runtime>(_app: &tauri::AppHand
 pub(crate) fn start_watchdog<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {}
 
 pub(crate) fn handle_missing_webview2_runtime() {}
+
+pub(crate) fn handle_damaged_webview2_runtime(_runtime_version: Option<&str>) {}

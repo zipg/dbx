@@ -54,3 +54,16 @@ gh run download 39385806824 -R zipg/dbx -n DBX-windows-x64-avcompat -D /Users/st
 - `docs/win-av-compat-research.md`：调研与证据（固定运行时、RendererCodeIntegrity、提权忽略环境变量等）。
 - `docs/windows-av-compat-testing.md`：客户端测试/回滚说明。
 - `.github/workflows/windows-av-compat-build.yml`：compile-check + 标准安装包 + fixed133/117 安装包。
+
+## 2026-10-21 结案：根因确认为 WebView2 运行时缺失/损坏
+
+客户安装官网 Win10 离线包（`DBX_0.6.49_x64-offline-setup.exe`，内嵌 WebView2）后正常启动，没有再出现企业兼容模式。结论与后续：
+
+- **不是安全软件拦截**。之前的企业兼容模式失败是"WebView2 注册信息存在但运行时文件损坏/缺失"导致（Tauri 只读注册表做检测，检测通过后环境创建失败）；官方 30MB 包的 downloadBootstrapper 安装方式在客户机器上没能真正装好运行时；Win7 包因为内置固定运行时所以能用。
+- 代码侧新增三态检测（`webview2_preflight::runtime_health()`）：
+  - `missing` → 中文提示 + 一键打开官方下载页，不再进兼容阶梯；
+  - `registered_but_damaged` → 中文提示"WebView2 已损坏，请覆盖安装/用离线包修复"，不再进兼容阶梯；
+  - `available` → 正常启动；若随后环境创建失败（真正的 AV 拦截）才走 11 级兼容阶梯。
+  - 逃生开关：`DBX_SKIP_WEBVIEW2_RUNTIME_CHECK=1`。
+- 对客户/企业用户的推荐：优先发**离线安装包**（offlineInstaller）；普通安装包依赖联网下载 WebView2，在离线/受限网络环境容易装不上。
+- 本次未重新构建安装包；后续如要发版，建议构建 `avcompat-offline`（offline 模式 + 新检测），CI job 已就绪（push 带 `[release-build]` 即可）。
