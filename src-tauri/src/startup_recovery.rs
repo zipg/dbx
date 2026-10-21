@@ -542,12 +542,6 @@ fn write_compatibility_marker(profile: &CompatProfile) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn remove_compatibility_marker() {
-    if let Some(path) = compatibility_marker_path() {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
 fn compatibility_profile_ready_record(profile: Option<&CompatProfile>, source: &str) -> String {
     let id = profile.map(|profile| profile.id).unwrap_or("standard");
     format!("compat profile user data ready source={source} profile={id}")
@@ -712,9 +706,11 @@ pub(crate) fn initialize() {
     }
     if let Some(profile) = profile {
         record(format!(
-            "compat profile settings index={} id={} user_data={:?} watchdog_secs={} start_delay_ms={} warmup={} elevated={} temp_copy={}",
+            "compat profile settings index={} id={} label_zh={} label_en={} user_data={:?} watchdog_secs={} start_delay_ms={} warmup={} elevated={} temp_copy={}",
             profile.index,
             profile.id,
+            profile.label_zh,
+            profile.label_en,
             profile.user_data,
             profile.watchdog.as_secs(),
             profile.start_delay.as_millis(),
@@ -1217,24 +1213,18 @@ pub(crate) fn mark_frontend_ready(main_window_visible: bool) {
     deactivate_probe();
 
     if let Some(profile) = profile {
-        let log_path =
-            startup_log_path().map(|path| path.display().to_string()).unwrap_or_else(|| "startup.log".to_string());
+        // No success popup: the app is already usable and a dialog would only
+        // interrupt the user. Remember the working method silently so the next
+        // launch is fast; if it fails again the remaining profiles are still
+        // tried automatically.
         let profile = *profile;
-        std::thread::spawn(move || {
-            let keep = show_compatibility_success_dialog(&profile, &log_path);
-            let result = if keep {
-                write_compatibility_marker(&profile).map(|()| "startup compatibility marker saved".to_string())
-            } else {
-                remove_compatibility_marker();
-                if profile.appcompat_win8 {
-                    let _ = crate::windows_appcompat::remove_win8_compat_layer();
-                }
-                Ok("startup compatibility marker declined by user".to_string())
-            };
-            append_persisted_record(
-                result.unwrap_or_else(|error| format!("startup compatibility marker failed: {error}")),
-            );
-        });
+        let result = write_compatibility_marker(&profile)
+            .map(|()| "startup compatibility marker saved (remembered automatically)".to_string())
+            .unwrap_or_else(|error| format!("startup compatibility marker failed: {error}"));
+        append_persisted_record(format!(
+            "compat profile succeeded profile={} id={}; {result}",
+            profile.index, profile.id
+        ));
     } else if keep_requested {
         record("frontend ready; startup log retained by DBX_KEEP_STARTUP_LOG=1");
     } else if let Some(path) = startup_log_path() {
@@ -1251,86 +1241,64 @@ fn windows_message_box(title: &str, body: &str, flags: u32) -> i32 {
     unsafe { MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), flags | MB_SETFOREGROUND) }
 }
 
-/// Stable support codes so a screenshot of the dialog is enough for support to
-/// know which startup failure happened (the codes are also written to startup.log
-/// and to the desktop diagnostics report).
+/// Stable support codes: the user only needs to screenshot the dialog (or send
+/// startup.log) and support knows which startup failure happened.
 const SUPPORT_CODE_MISSING_RUNTIME: &str = "DBX-STARTUP-001";
 const SUPPORT_CODE_DAMAGED_RUNTIME: &str = "DBX-STARTUP-002";
 const SUPPORT_CODE_COMPAT_EXHAUSTED: &str = "DBX-STARTUP-003";
 
-/// Path of the user-facing diagnostics report written to the Desktop (falls back
-/// to %TEMP%). Writing a file is friendlier than asking an end user to navigate to
-/// `%APPDATA%\com.dbx.app` and attach a hidden log file.
-fn support_report_path() -> Option<PathBuf> {
-    let desktop = std::env::var_os("USERPROFILE").map(PathBuf::from).map(|profile| profile.join("Desktop"));
-    let base =
-        desktop.filter(|directory| directory.is_dir()).or_else(|| std::env::var_os("TEMP").map(PathBuf::from))?;
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    Some(base.join(format!("DBX-启动诊断-{stamp}.txt")))
+fn startup_log_display_path() -> String {
+    startup_log_path().map(|path| path.display().to_string()).unwrap_or_else(|| "startup.log".to_string())
 }
 
-/// Writes a self-contained report (error code, cause, environment diagnostics, log
-/// path, how-to-send-it instructions) next to the user's Desktop. Returns the path
-/// so the dialog can tell the user exactly which file to send.
+/// Opens the official DBX download page (the Windows 10 offline package lives
+/// there). Guidance deliberately points at DBX's own download page instead of
+/// Microsoft's WebView2 page: the offline DBX installer bundles the runtime, so
+/// the user only needs one download and no technical decisions.
 #[cfg(target_os = "windows")]
-fn write_support_report(error_code: &str, summary: &str, details: &str) -> Option<PathBuf> {
-    let path = support_report_path()?;
-    let mut report = String::new();
-    report.push_str("DBX 启动诊断报告 / DBX startup diagnostics\n");
-    report.push_str("=================================================\n");
-    report.push_str(&format!("错误码 / Error code: {error_code}\n"));
-    report.push_str(&format!("结论 / Summary: {summary}\n"));
-    report.push_str(&format!("时间 / Time: {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
-    report.push_str(&format!("DBX 版本 / Version: {}\n", env!("CARGO_PKG_VERSION")));
-    report.push_str(&format!("系统 / OS: {} {}\n", std::env::consts::OS, std::env::consts::ARCH));
-    report.push_str(&format!(
-        "WebView2 运行时状态 / Runtime health: {}\n",
-        crate::webview2_preflight::runtime_health().as_str()
-    ));
-    report.push_str(&format!(
-        "启动日志 / Startup log: {}\n",
-        startup_log_path().map(|log| log.display().to_string()).unwrap_or_else(|| "startup.log".to_string())
-    ));
-    report.push_str("\n详情 / Details:\n");
-    report.push_str(details);
-    report.push_str("\n\n--- WebView2 / 环境诊断 ---\n");
-    for line in crate::webview2_preflight::format_diagnostics(&crate::webview2_preflight::collect_diagnostics()) {
-        report.push_str(&line);
-        report.push('\n');
+fn open_dbx_download_page() {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let url: Vec<u16> = "https://dbxio.com/\0".encode_utf16().collect();
+    // SAFETY: both strings are NUL-terminated UTF-16 and outlive the call; the URL
+    // is a fixed constant, so no untrusted input reaches ShellExecuteW.
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            url.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
     }
-    report.push_str("\n--- 如何寻求帮助 / How to get help ---\n");
-    report.push_str("1. 请把本文件连同同目录下的 startup.log（如果存在）一起发送给 DBX 维护者；\n");
-    report.push_str("2. 渠道：GitHub Issues https://github.com/t8y2/dbx/issues 或内部交流群 @维护者；\n");
-    report.push_str("3. 请附上错误码与弹出提示的截图，便于快速定位。\n");
-    std::fs::write(&path, report).ok()?;
-    Some(path)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn write_support_report(_error_code: &str, _summary: &str, _details: &str) -> Option<PathBuf> {
-    None
-}
+fn open_dbx_download_page() {}
 
 /// Opens Explorer with the startup log selected (or its folder when the log does
-/// not exist). Used by the failure dialogs so "send us the log" is one click away.
+/// not exist), so "send us the log" is one click away.
 #[cfg(target_os = "windows")]
 fn open_log_folder() {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     let log_path = startup_log_path();
-    let (file, parameters) = match &log_path {
-        Some(log) if log.is_file() => ("explorer.exe", format!("/select,\"{}\"", log.display())),
+    let parameters = match &log_path {
+        Some(log) if log.is_file() => format!("/select,\"{}\"", log.display()),
         _ => {
             let folder = log_path
                 .as_ref()
                 .and_then(|log| log.parent().map(|parent| parent.display().to_string()))
                 .unwrap_or_else(|| "%APPDATA%\\com.dbx.app".to_string());
-            ("explorer.exe", format!("\"{folder}\""))
+            format!("\"{folder}\"")
         }
     };
     let verb: Vec<u16> = "open\0".encode_utf16().collect();
-    let file: Vec<u16> = file.encode_utf16().chain(std::iter::once(0)).collect();
+    let file: Vec<u16> = "explorer.exe\0".encode_utf16().collect();
     let parameters: Vec<u16> = parameters.encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: all strings are NUL-terminated UTF-16 and outlive the call; the
     // command is a fixed explorer.exe invocation (no untrusted input).
@@ -1349,103 +1317,64 @@ fn open_log_folder() {
 #[cfg(not(target_os = "windows"))]
 fn open_log_folder() {}
 
-/// Opens the official WebView2 download page in the default browser. Used by the
-/// missing/damaged-runtime guidance; best-effort (the URL is fixed, no user input).
+/// Failure dialog for the WebView2-runtime cases (001 missing / 002 damaged).
+///
+/// The only user action is "download the Windows 10 offline package from DBX's
+/// own site and reinstall" — no Microsoft page, no desktop report, no trust-list
+/// instructions, no AV product names. The single diagnostic artifact is the
+/// already-existing startup.log.
 #[cfg(target_os = "windows")]
-fn open_webview2_download_page() {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let verb: Vec<u16> = "open\0".encode_utf16().collect();
-    let url: Vec<u16> = "https://developer.microsoft.com/microsoft-edge/webview2/\0".encode_utf16().collect();
-    // SAFETY: both strings are NUL-terminated UTF-16 and outlive the call; the URL
-    // is a fixed constant, so no untrusted input reaches ShellExecuteW.
-    unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            url.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        );
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn open_webview2_download_page() {}
-
-/// Renders the "need help?" block shared by all startup-failure dialogs.
-fn support_help_block(error_code: &str, summary: &str, details: &str) -> String {
-    let log_path =
-        startup_log_path().map(|path| path.display().to_string()).unwrap_or_else(|| "startup.log".to_string());
-    match write_support_report(error_code, summary, details) {
-        Some(report) => format!(
-            "\n【需要帮助？】\n已生成诊断文件（可直接发送）：\n{}\n启动日志：{}\n请把这两个文件发给维护者（GitHub Issues 或交流群），并附上错误码 {error_code}。",
-            report.display(),
-            log_path
-        ),
-        None => format!(
-            "\n【需要帮助？】\n请把启动日志发给维护者（GitHub Issues 或交流群），并附上错误码 {error_code}：\n{log_path}"
-        ),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn show_compatibility_success_dialog(profile: &CompatProfile, log_path: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON1, MB_ICONINFORMATION, MB_YESNO};
-
-    let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
-    let body = if locale.starts_with("zh") {
-        format!(
-            "DBX 已正常启动。\n\n本次使用了「安全软件兼容启动方式 {}/{}」：{}\n（内部标识：{}）\n\n是否记住这种启动方式？\n\n是：以后启动直接使用它（若仍失败，会自动继续尝试其它方式）\n否：下次启动重新自动选择\n\n本次启动日志：{log_path}",
-            profile.index,
-            COMPAT_PROFILES.len(),
-            profile.label_zh,
-            profile.id
-        )
-    } else {
-        format!(
-            "DBX started successfully.\n\nStartup compatibility method {}/{} was used: {}\n(id: {})\n\nRemember this startup method?\n\nYes: use it directly on future launches (if it fails, the remaining methods are still tried).\nNo: auto-select again next time.\n\nStartup log: {log_path}",
-            profile.index,
-            COMPAT_PROFILES.len(),
-            profile.label_en,
-            profile.id
-        )
-    };
-    windows_message_box("DBX", &body, MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON1) == IDYES
-}
-
-#[cfg(not(target_os = "windows"))]
-fn show_compatibility_success_dialog(_profile: &CompatProfile, _log_path: &str) -> bool {
-    false
-}
-
-#[cfg(target_os = "windows")]
-fn show_compatibility_failure_message(attempted_history: &str) {
+fn show_webview2_runtime_dialog(error_code: &str, damaged: bool) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON1, MB_ICONWARNING, MB_YESNO};
 
-    let attempted = format_history(attempted_history);
-    let summary = format!(
-        "已自动尝试 {} 种启动方式仍无法显示主窗口，最可能是安全软件拦截 WebView2（已尝试：{attempted}）",
-        COMPAT_PROFILES.len()
-    );
-    let details = format!(
-        "startup compatibility profiles exhausted\nattempted={attempted}\nprofile_count={}",
-        COMPAT_PROFILES.len()
-    );
+    let log_path = startup_log_display_path();
     let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
     let body = if locale.starts_with("zh") {
+        if damaged {
+            format!(
+                "【DBX 无法启动】\nWebView2 运行时已损坏，DBX 无法显示主界面。\n\n错误码：{error_code}\n\n请到 DBX 官网下载「Windows 10 离线版」重新安装（离线版自带 WebView2，安装时会自动修复）：\n点“是”打开 DBX 官网下载页，点“否”关闭。\n\n如仍有问题，请把启动日志发给维护者：\n{log_path}"
+            )
+        } else {
+            format!(
+                "【DBX 无法启动】\n缺少 WebView2 运行时，DBX 无法显示主界面。\n\n错误码：{error_code}\n\n请到 DBX 官网下载「Windows 10 离线版」重新安装（离线版自带 WebView2，无需联网）：\n点“是”打开 DBX 官网下载页，点“否”关闭。\n\n如仍有问题，请把启动日志发给维护者：\n{log_path}"
+            )
+        }
+    } else if damaged {
         format!(
-            "【DBX 无法启动】\n安全软件可能拦截了 WebView2，DBX 已自动尝试 {} 种兼容启动方式，但主窗口仍未显示。\n\n错误码：{SUPPORT_CODE_COMPAT_EXHAUSTED}\n\n最可能原因：360、奇安信、卡巴斯基等安全软件拦截了 WebView2 的子进程 msedgewebview2.exe。\n\n建议按顺序尝试：\n1. 在安全软件“信任区/白名单”中加入：dbx.exe、msedgewebview2.exe；\n2. 关闭安全软件的“沙箱 / 核晶防护 / 自保护”后重新打开 DBX；\n3. 仍不行就发起求助（见下）。\n{}",
-            COMPAT_PROFILES.len(),
-            support_help_block(SUPPORT_CODE_COMPAT_EXHAUSTED, &summary, &details)
+            "【DBX could not start】\nThe WebView2 runtime is damaged, so DBX cannot show its window.\n\nError code: {error_code}\n\nDownload the Windows 10 offline package from the official DBX website and reinstall (it bundles WebView2 and repairs it during setup):\nYes = open the DBX download page, No = close.\n\nIf it still fails, send the startup log to the maintainer:\n{log_path}"
         )
     } else {
         format!(
-            "【DBX could not start】\nA security product may be blocking WebView2. DBX automatically tried {} startup compatibility methods, but the main window still did not appear.\n\nError code: {SUPPORT_CODE_COMPAT_EXHAUSTED}\n\nMost likely cause: 360/QiAnXin/Kaspersky blocks WebView2's child process msedgewebview2.exe.\n\nTry in order:\n1. Add dbx.exe and msedgewebview2.exe to the security product's trust list;\n2. Disable its sandbox/self-protection and reopen DBX;\n3. If it still fails, send us the diagnostics below.\n{}",
-            COMPAT_PROFILES.len(),
-            support_help_block(SUPPORT_CODE_COMPAT_EXHAUSTED, &summary, &details)
+            "【DBX could not start】\nThe WebView2 runtime is missing, so DBX cannot show its window.\n\nError code: {error_code}\n\nDownload the Windows 10 offline package from the official DBX website and reinstall (it bundles WebView2, no internet required):\nYes = open the DBX download page, No = close.\n\nIf it still fails, send the startup log to the maintainer:\n{log_path}"
+        )
+    };
+    let open_download =
+        windows_message_box("DBX 无法启动 / DBX startup failed", &body, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON1)
+            == IDYES;
+    if open_download {
+        open_dbx_download_page();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_webview2_runtime_dialog(_error_code: &str, _damaged: bool) {}
+
+/// Failure dialog when every startup-compatibility profile failed (real AV
+/// blocking or another window-creation failure). No product names, no attempt
+/// list (both are in startup.log); one single log file and one action.
+#[cfg(target_os = "windows")]
+fn show_compatibility_failure_message(_attempted_history: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON1, MB_ICONWARNING, MB_YESNO};
+
+    let log_path = startup_log_display_path();
+    let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
+    let body = if locale.starts_with("zh") {
+        format!(
+            "【DBX 无法启动】\nDBX 已自动尝试多种兼容启动方式，主窗口仍未显示。\n\n错误码：{SUPPORT_CODE_COMPAT_EXHAUSTED}\n\n最常见原因是安全软件拦截了 WebView2（与具体哪款软件无关），可尝试暂时退出安全软件后重新打开 DBX。\n\n请把启动日志发给维护者排查：\n{log_path}\n点“是”打开日志所在文件夹，点“否”关闭。"
+        )
+    } else {
+        format!(
+            "【DBX could not start】\nDBX tried several startup compatibility methods, but the main window still did not appear.\n\nError code: {SUPPORT_CODE_COMPAT_EXHAUSTED}\n\nThe usual cause is a security product blocking WebView2 (regardless of which one); try temporarily exiting it and reopening DBX.\n\nSend the startup log to the maintainer for diagnosis:\n{log_path}\nYes = open the log folder, No = close."
         )
     };
     let open_logs =
@@ -1459,24 +1388,20 @@ fn show_compatibility_failure_message(attempted_history: &str) {
 #[cfg(not(target_os = "windows"))]
 fn show_compatibility_failure_message(_attempted_history: &str) {}
 
-/// Failure dialog for the legacy disabled-compatibility path (kept for
-/// `DBX_DISABLE_*` users): same structure as the exhausted-ladder dialog.
+/// Failure dialog for the legacy disabled-compatibility path (`DBX_DISABLE_*`).
 #[cfg(target_os = "windows")]
 fn show_recovery_failure_message() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON1, MB_ICONWARNING, MB_YESNO};
 
-    let summary = "启动恢复未成功；兼容启动方式可能被环境变量禁用，或主窗口创建失败";
-    let details = "startup recovery failed (compatibility ladder disabled or window creation failed)";
+    let log_path = startup_log_display_path();
     let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
     let body = if locale.starts_with("zh") {
         format!(
-            "【DBX 无法启动】\n主窗口没有显示，且当前环境没有继续自动尝试兼容启动方式。\n\n错误码：{SUPPORT_CODE_COMPAT_EXHAUSTED}\n\n建议：\n1. 确认没有设置 DBX_DISABLE_ENTERPRISE_COMPAT / DBX_DISABLE_STARTUP_COMPAT；\n2. 检查 WebView2 是否损坏（可尝试重装 WebView2 或用离线安装包）；\n3. 仍不行就发起求助（见下）。\n{}",
-            support_help_block(SUPPORT_CODE_COMPAT_EXHAUSTED, summary, details)
+            "【DBX 无法启动】\n主窗口没有显示，且当前环境没有继续自动尝试兼容启动方式。\n\n错误码：{SUPPORT_CODE_COMPAT_EXHAUSTED}\n\n请把启动日志发给维护者排查：\n{log_path}\n点“是”打开日志所在文件夹，点“否”关闭。"
         )
     } else {
         format!(
-            "【DBX could not start】\nThe main window did not appear and automatic compatibility retries are disabled in this environment.\n\nError code: {SUPPORT_CODE_COMPAT_EXHAUSTED}\n\nTry:\n1. Make sure DBX_DISABLE_ENTERPRISE_COMPAT / DBX_DISABLE_STARTUP_COMPAT is not set;\n2. Check whether WebView2 is damaged (reinstall it or use the offline installer);\n3. If it still fails, send us the diagnostics below.\n{}",
-            support_help_block(SUPPORT_CODE_COMPAT_EXHAUSTED, summary, details)
+            "【DBX could not start】\nThe main window did not appear and automatic compatibility retries are disabled in this environment.\n\nError code: {SUPPORT_CODE_COMPAT_EXHAUSTED}\n\nSend the startup log to the maintainer for diagnosis:\n{log_path}\nYes = open the log folder, No = close."
         )
     };
     let open_logs =
@@ -1504,72 +1429,16 @@ pub(crate) fn handle_damaged_webview2_runtime(runtime_version: Option<&str>) {
         runtime_version.unwrap_or("<unknown>")
     ));
     persist_buffer();
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON1, MB_ICONWARNING, MB_YESNO};
-
-        let version = runtime_version.unwrap_or("unknown");
-        let summary = format!("检测到 WebView2 注册信息（版本 {version}），但运行时文件缺失或损坏，DBX 无法显示界面");
-        let details = format!(
-            "webview2 registered_but_damaged\nruntime_version={version}\nrepair=reinstall the Evergreen runtime or use the DBX offline installer"
-        );
-        let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
-        let body = if locale.starts_with("zh") {
-            format!(
-                "【DBX 无法启动】\n检测到 WebView2 的注册信息（版本 {version}），但它的程序文件缺失或已损坏，所以 DBX 无法显示界面。\n\n错误码：{SUPPORT_CODE_DAMAGED_RUNTIME}\n\n常见原因：安全软件误删/隔离、清理工具删除、WebView2 更新中断。\n\n建议按顺序尝试：\n1. 点“是”打开微软官方下载页，下载 “Evergreen Standalone Installer” 覆盖安装（可修复）；\n2. 或使用 DBX 的离线安装包（内置 WebView2，安装时自动修复）；\n3. 若安装被安全软件拦截，先把 dbx.exe、msedgewebview2.exe 加入信任区。\n{}",
-                support_help_block(SUPPORT_CODE_DAMAGED_RUNTIME, &summary, &details)
-            )
-        } else {
-            format!(
-                "【DBX could not start】\nA WebView2 registration exists (version {version}) but its runtime files are missing or corrupted, so DBX cannot show its window.\n\nError code: {SUPPORT_CODE_DAMAGED_RUNTIME}\n\nTypical causes: a security product quarantined files, a cleanup tool removed them, or a WebView2 update was interrupted.\n\nTry in order:\n1. Click Yes to open the official download page and install the \"Evergreen Standalone Installer\" over the existing runtime (this repairs it);\n2. Or use DBX's offline installer (WebView2 is bundled and repaired during setup);\n3. If a security product blocks the install, add dbx.exe and msedgewebview2.exe to its trust list first.\n{}",
-                support_help_block(SUPPORT_CODE_DAMAGED_RUNTIME, &summary, &details)
-            )
-        };
-        let open_download =
-            windows_message_box("DBX 无法启动 / DBX startup failed", &body, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON1)
-                == IDYES;
-        if open_download {
-            open_webview2_download_page();
-        }
-    }
+    show_webview2_runtime_dialog(SUPPORT_CODE_DAMAGED_RUNTIME, true);
 }
 
-/// The machine has no usable WebView2 runtime. Show one explicit, actionable
-/// message instead of pretending this is an AV/enterprise compatibility problem
-/// (that misdiagnosis made a missing runtime look like a 360 block for a long
-/// time: the watchdog fired, the "enterprise compatibility" retry failed, and the
-/// failure dialog blamed the security software).
+/// The machine has no usable WebView2 runtime.
 pub(crate) fn handle_missing_webview2_runtime() {
     record(format!(
         "webview2 runtime is not installed support_code={SUPPORT_CODE_MISSING_RUNTIME}; skipping startup compatibility profiles"
     ));
     persist_buffer();
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON1, MB_ICONWARNING, MB_YESNO};
-
-        let summary = "当前电脑没有安装 WebView2 运行时，DBX 的界面无法渲染（不是安全软件拦截）";
-        let details =
-            "webview2 runtime missing\nfix=install the Evergreen Standalone Installer or use the DBX offline installer";
-        let locale = sys_locale::get_locale().unwrap_or_default().to_ascii_lowercase();
-        let body = if locale.starts_with("zh") {
-            format!(
-                "【DBX 无法启动】\nDBX 的界面由 Microsoft Edge WebView2 渲染，当前电脑没有安装它。\n\n错误码：{SUPPORT_CODE_MISSING_RUNTIME}\n\n这不是 360/奇安信/卡巴斯基拦截，而是运行时就缺失。建议按顺序尝试：\n1. 点“是”打开微软官方下载页，下载 “Evergreen Standalone Installer（x64）” 并安装；\n2. 或使用 DBX 的离线安装包（自带 WebView2，无需联网）；\n3. 若安装被安全软件拦截，先把 dbx.exe 加入信任区再装。\n{}",
-                support_help_block(SUPPORT_CODE_MISSING_RUNTIME, summary, details)
-            )
-        } else {
-            format!(
-                "【DBX could not start】\nDBX's UI is rendered by Microsoft Edge WebView2, but it is not installed on this machine.\n\nError code: {SUPPORT_CODE_MISSING_RUNTIME}\n\nThis is a missing runtime, not a 360/QiAnXin/Kaspersky block. Try in order:\n1. Click Yes to open the official download page and install the \"Evergreen Standalone Installer (x64)\";\n2. Or use DBX's offline installer (WebView2 is bundled, no internet required);\n3. If a security product blocks the install, add dbx.exe to its trust list first.\n{}",
-                support_help_block(SUPPORT_CODE_MISSING_RUNTIME, summary, details)
-            )
-        };
-        let open_download =
-            windows_message_box("DBX 无法启动 / DBX startup failed", &body, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON1)
-                == IDYES;
-        if open_download {
-            open_webview2_download_page();
-        }
-    }
+    show_webview2_runtime_dialog(SUPPORT_CODE_MISSING_RUNTIME, false);
 }
 
 #[cfg(test)]

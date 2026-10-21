@@ -82,13 +82,13 @@ early main window show requested; main_window visible=Err(Runtime(FailedToReceiv
 
 | 场景 | 判定依据（修复后日志） | 现象 | 处理 |
 |---|---|---|---|
-| **WebView2 运行时缺失** | `webview2 runtime_health=missing` | 旧版本弹 Tauri 通用英文框后进程退出（不会进入企业兼容模式）；修复版本弹 DBX 中文提示，可一键打开微软官方下载页 | 安装 WebView2 Runtime（官网 Evergreen Standalone Installer，或 DBX 离线包） |
-| **WebView2 注册存在但文件损坏/被删**（本次客户的实际状态） | `webview2 runtime_health=registered_but_damaged` + `runtime_version=<版本>` | 旧版本：版本检测通过 → 窗口创建卡 30s+ / 窗口销毁 → 60s 后进企业兼容阶梯（误导为 AV 拦截）；修复版本弹"WebView2 已损坏，请覆盖安装修复"并给出下载页 | 重新安装/修复 WebView2（覆盖安装即可），或使用 DBX 离线包 |
+| **WebView2 运行时缺失** | `webview2 runtime_health=missing` | 旧版本弹 Tauri 通用英文框后进程退出（不会进入企业兼容模式）；修复版本弹 DBX 中文提示，"是"打开 DBX 官网下载页 | 到 DBX 官网下载 **Windows 10 离线版**重新安装（自带 WebView2） |
+| **WebView2 注册存在但文件损坏/被删**（本次客户的实际状态） | `webview2 runtime_health=registered_but_damaged` + `runtime_version=<版本>` | 旧版本：版本检测通过 → 窗口创建卡 30s+ / 窗口销毁 → 60s 后进企业兼容阶梯（误导为 AV 拦截）；修复版本提示"WebView2 已损坏"，"是"打开 DBX 官网下载页 | 到 DBX 官网下载 **Windows 10 离线版**重新安装（覆盖安装会自动修复） |
 | **运行时正常但被安全软件拦截** | `runtime_health=available`，但 `startup.log` 有 30s 级卡顿、窗口探测 `FailedToReceiveMessage`、阶梯部分 profile 失败 | 主窗口不显示，60s 后进入启动兼容阶梯 | 信任区加入 `dbx.exe` + `msedgewebview2.exe`；让阶梯报告哪种方式有效 |
 
 为什么"缺失"不会被误判成企业兼容模式：Tauri 在创建窗口前会执行 `wry::webview_version()`，缺失时直接弹它自己的英文对话框并让 `Builder::build()` 失败；DBX 的启动 watchdog（触发企业兼容模式的逻辑）只在构建成功后才启动，所以根本到不了兼容阶梯。
 
-> 修复后的版本（启动前检测）：缺失或"注册但损坏"时弹 DBX 中文指引（"是"打开官方下载页），不再跑 11 级阶梯；运行时正常但被拦截的机器照常走阶梯。可用 `DBX_SKIP_WEBVIEW2_RUNTIME_CHECK=1` 跳过该检测（逃生开关）。
+> 修复后的版本（启动前检测）：缺失或"注册但损坏"时弹 DBX 中文指引（"是"打开 DBX 官网下载页），不再跑 11 级阶梯；运行时正常但被拦截的机器照常走阶梯。可用 `DBX_SKIP_WEBVIEW2_RUNTIME_CHECK=1` 跳过该检测（逃生开关）。
 
 **当前已发出的标准测试包（commit 4951cf2a）不含这个提示改进**，但测试逻辑不受影响：**先让客户从官网安装 WebView2 Runtime，再运行标准包即可**。
 
@@ -126,12 +126,13 @@ CI（`.github/workflows/windows-av-compat-build.yml`）产出三个安装包（�
 
 | 错误码 | 含义 | 弹框行为 |
 |---|---|---|
-| `DBX-STARTUP-001` | 未安装 WebView2 运行时 | 提示安装步骤；"是"打开微软官方下载页 |
-| `DBX-STARTUP-002` | WebView2 注册信息存在但文件缺失/损坏 | 提示覆盖安装修复；"是"打开微软官方下载页 |
-| `DBX-STARTUP-003` | 安全软件拦截 WebView2，11 种兼容启动方式全部失败 | 提示加信任区/关核晶防护；"是"打开启动日志所在文件夹 |
+| `DBX-STARTUP-001` | 未安装 WebView2 运行时 | 提示到 DBX 官网下载 **Windows 10 离线版**重装；"是"打开 DBX 官网下载页 |
+| `DBX-STARTUP-002` | WebView2 注册信息存在但文件缺失/损坏 | 同样引导到 DBX 官网下载 Windows 10 离线版重装（安装时自动修复） |
+| `DBX-STARTUP-003` | 多种兼容启动方式全部失败（安全软件拦截等） | 不点名具体杀软、不列尝试过的方式（都在日志里）；"是"打开启动日志所在文件夹 |
 
-- 弹框会**自动在桌面生成诊断文件** `DBX-启动诊断-<时间>.txt`（错误码、结论、WebView2/杀软环境、日志路径、求助方式），用户只需把该文件和 `startup.log` 一起发回，不需要自己去 `%APPDATA%` 找日志。
-- 日志中同时记录 `webview2 runtime_health=` 和失败阶段/HRESULT。
+- 失败时**只有一份诊断文件**：既有的 `startup.log`（`%APPDATA%\com.dbx.app\startup.log`），弹框直接给出完整路径；不再额外生成桌面报告文件。
+- 日志中记录 `webview2 runtime_health=`、失败阶段/HRESULT、尝试过的 profile（含中文/英文名称）。
+- **兼容方式成功后不再弹框**（不打断用户），自动记住命中的方式（写入 marker），下次直接用；若该方式失效会自动继续尝试后续方式。
 - 默认情况下运行时缺失/损坏时**不再跑 11 级兼容阶梯**（无法修复运行时且会误导为安全软件问题）；如需强行复现"全都试一遍"，设置环境变量 `DBX_TRY_COMPAT_ON_BROKEN_WEBVIEW2=1`。
 - 文案上把"企业环境兼容模式"统一改为「安全软件兼容启动方式」，避免用户误以为和公司域环境/企业策略有关。
 
