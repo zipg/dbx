@@ -1,0 +1,1 @@
+Screenshots render the actual TreeItem Vue component and RecycleScroller with synthetic connection store data. No live databases or user connection details are included. Before uses upstream/main TreeItem and width helper; after uses cafe2af35. 90 browser checks cover 2 renderers, 3 widths, 5 note modes, horizontal scrolling on/off and before/after scrolling.
