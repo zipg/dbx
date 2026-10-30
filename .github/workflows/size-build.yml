@@ -5,6 +5,8 @@ name: Size Build
 # before/after sizes; no signing/notarization secrets required.
 
 on:
+  push:
+    branches: [ "size/**" ]
   workflow_dispatch:
     inputs:
       target:
@@ -21,7 +23,7 @@ env:
 
 jobs:
   macos:
-    if: inputs.target == 'all' || inputs.target == 'macos'
+    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'macos'
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
@@ -78,7 +80,7 @@ jobs:
           if-no-files-found: error
 
   linux:
-    if: inputs.target == 'all' || inputs.target == 'linux'
+    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'linux'
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -162,7 +164,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    if: inputs.target == 'all' || inputs.target == 'windows'
+    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'windows'
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
