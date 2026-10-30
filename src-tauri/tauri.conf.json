@@ -7,7 +7,8 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "beforeBuildCommand": "pnpm build",
+    "removeUnusedCommands": true
   },
   "app": {
     "windows": [
@@ -58,7 +59,11 @@
         "desktopTemplate": "linux/DBX.desktop"
       },
       "rpm": {
-        "desktopTemplate": "linux/DBX.desktop"
+        "desktopTemplate": "linux/DBX.desktop",
+        "compression": {
+          "type": "xz",
+          "level": 6
+        }
       }
     },
     "macOS": {

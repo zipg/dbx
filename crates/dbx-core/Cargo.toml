@@ -25,7 +25,7 @@ openapi = ["dbx-types/openapi", "dbx-sql/openapi"]
 # secret-service/zbus client so cross builds (zigbuild) link no C libdbus.
 # Desktop and native package builds enable this.
 os-keyring = ["dep:keyring", "dep:secret-service"]
-system-fonts = ["font-kit"]
+system-fonts = ["dep:fontdb"]
 
 [dependencies]
 dbx-drivers = { path = "../dbx-drivers", default-features = false }
@@ -81,7 +81,7 @@ keyring = { version = "3.6.3", default-features = false, optional = true, featur
 sha2 = "0.10"
 async-trait = "0.1"
 bytes = "1"
-font-kit = { version = "0.14.3", optional = true }
+fontdb = { version = "0.24", optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 flate2 = "1"
 crc = "3"

@@ -323,6 +323,135 @@ jobs:
         shell: bash
         run: ${SCCACHE_PATH} --show-stats
 
+  shrink-linux:
+    # Post-process Linux bundles that tauri-bundler compresses inefficiently:
+    # AppImage (squashfs zstd L15) and deb (data.tar.gz gzip-6). Waits for the
+    # Windows legs so the latest.json it rewrites is the final one.
+    needs: [build, build-windows, build-windows-7-offline]
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Setup Tauri signing key
+        shell: bash
+        run: |
+          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/updater.key"
+          KEY_B64=$(base64 < "$RUNNER_TEMP/updater.key" | tr -d '\r\n')
+          echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
+          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install repack tools
+        run: sudo apt-get update && sudo apt-get install -y squashfs-tools
+
+      - name: Download appimagetool
+        run: |
+          curl -fsSL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          echo "95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+
+      - name: Download Linux bundles
+        run: |
+          mkdir -p dist-shrink
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --dir dist-shrink --clobber \
+            --pattern "*.AppImage" --pattern "*.deb"
+
+      - name: Repack AppImage and deb
+        env:
+          APPIMAGETOOL: ${{ github.workspace }}/appimagetool
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for bundle in dist-shrink/*.AppImage; do ./scripts/shrink/repack-appimage.sh "$bundle"; done
+          for bundle in dist-shrink/*.deb; do ./scripts/shrink/repack-deb.sh "$bundle"; done
+
+      - name: Sign repacked bundles
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for bundle in dist-shrink/*.AppImage dist-shrink/*.deb; do
+            pnpm tauri signer sign "--password=${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$bundle"
+          done
+
+      - name: Upload repacked bundles
+        run: gh release upload "$GITHUB_REF_NAME" dist-shrink/* --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Refresh latest.json signatures
+        run: node scripts/shrink/patch-latest-json.mjs dist-shrink
+
+  shrink-macos:
+    # hdiutil UDZO -> ULMO. Tauri's embedded bundle_dmg script hardcodes UDZO
+    # and the DMG config schema has no compression knob, so the image has to be
+    # converted after the build; the .dmg signature is then regenerated.
+    needs: [build]
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Apple certificate
+        if: env.APPLE_CERTIFICATE != ''
+        shell: bash
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+          security create-keychain -p "" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "" $KEYCHAIN_PATH
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
+          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
+
+      - name: Download macOS bundle
+        run: |
+          mkdir -p dist-shrink
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --dir dist-shrink --clobber --pattern "*.dmg"
+
+      - name: Convert, re-sign and notarize DMG
+        if: env.APPLE_SIGNING_IDENTITY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for bundle in dist-shrink/*.dmg; do
+            ./scripts/shrink/convert-dmg-ulmo.sh "$bundle"
+            codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$bundle"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              xcrun notarytool submit "$bundle" \
+                --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+              xcrun stapler staple "$bundle"
+            fi
+          done
+
+      - name: Upload converted DMG
+        if: env.APPLE_SIGNING_IDENTITY != ''
+        run: gh release upload "$GITHUB_REF_NAME" dist-shrink/*.dmg --repo "$GITHUB_REPOSITORY" --clobber
+
   build-windows:
     needs: release-ready
     environment: release-signing
@@ -486,6 +615,11 @@ jobs:
           )
 
       - name: Upload Windows WebView2 offline installer
+        # Tauri maps non-x64 arches to the x86 standalone installer
+        # (windows/util.rs), so an arm64 "offline" build would ship a ~190 MB
+        # x86 runtime that arm64 DBX cannot load. Windows on ARM already ships
+        # WebView2, so only the x64 offline package is published.
+        if: matrix.arch == 'x64'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -999,7 +1133,8 @@ jobs:
         run: ${SCCACHE_PATH} --show-stats
 
   cleanup-release-signatures:
-    needs: [build, build-windows, build-windows-7-offline]
+    if: always()
+    needs: [build, build-windows, build-windows-7-offline, shrink-linux, shrink-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Remove standalone updater signature assets

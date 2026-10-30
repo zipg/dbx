@@ -1,0 +1,207 @@
+name: Size Build
+
+# Unsigned, size-focused build used to measure the effect of the installer
+# compression changes on a fork. Produces all three desktop bundles and prints
+# before/after sizes; no signing/notarization secrets required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which platform(s) to build"
+        type: choice
+        options: [all, macos, linux, windows]
+        default: all
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  macos:
+    if: inputs.target == 'all' || inputs.target == 'macos'
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build macOS app and DMG
+        run: |
+          pnpm tauri build --target aarch64-apple-darwin --bundles dmg \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Report sizes before conversion
+        run: |
+          set -euo pipefail
+          APP="target/aarch64-apple-darwin/release/bundle/macos/DBX.app"
+          DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
+          cp "$DMG" "${DMG%.dmg}-udzo.dmg"
+          {
+            echo "### macOS (aarch64)"
+            echo ""
+            echo "| artifact | bytes | MiB |"
+            echo "|---|---|---|"
+            echo "| dbx binary | $(wc -c <"$APP/Contents/MacOS/dbx") | $(du -m "$APP/Contents/MacOS/dbx" | cut -f1) |"
+            echo "| DBX.app | $(du -sk "$APP" | cut -f1 | awk '{print $1*1024}') | $(du -sm "$APP" | cut -f1) |"
+            echo "| DMG (UDZO) | $(wc -c <"$DMG") | $(du -m "$DMG" | cut -f1) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Convert DMG to ULMO
+        run: |
+          set -euo pipefail
+          DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' ! -name '*-udzo.dmg' | head -1)
+          ./scripts/shrink/convert-dmg-ulmo.sh "$DMG"
+          echo "| DMG (ULMO) | $(wc -c <"$DMG") | $(du -m "$DMG" | cut -f1) |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-macos
+          path: |
+            target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  linux:
+    if: inputs.target == 'all' || inputs.target == 'linux'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev xdg-utils squashfs-tools
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download appimagetool
+        run: |
+          curl -fsSL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          echo "95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+
+      - name: Build Linux bundles
+        run: pnpm tauri build --bundles appimage,deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Report sizes before repacking
+        run: |
+          set -euo pipefail
+          mkdir -p originals
+          find target/release/bundle -name '*.AppImage' -o -name '*.deb' | while read -r f; do
+            cp "$f" "originals/$(basename "$f")"
+          done
+          {
+            echo "### Linux (x86_64)"
+            echo ""
+            echo "| artifact | bytes | MiB |"
+            echo "|---|---|---|"
+            for f in originals/*; do
+              echo "| $(basename "$f") | $(wc -c <"$f") | $(du -m "$f" | cut -f1) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Repack AppImage and deb
+        env:
+          APPIMAGETOOL: ${{ github.workspace }}/appimagetool
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in target/release/bundle/appimage/*.AppImage; do ./scripts/shrink/repack-appimage.sh "$f"; done
+          for f in target/release/bundle/deb/*.deb; do ./scripts/shrink/repack-deb.sh "$f"; done
+
+      - name: Report sizes after repacking
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "| repacked artifact | bytes | MiB |"
+            echo "|---|---|---|"
+            for f in target/release/bundle/appimage/*.AppImage target/release/bundle/deb/*.deb; do
+              echo "| $(basename "$f") | $(wc -c <"$f") | $(du -m "$f" | cut -f1) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-linux
+          path: |
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+  windows:
+    if: inputs.target == 'all' || inputs.target == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows NSIS installer
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Report sizes
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          $bin = Get-Item target/x86_64-pc-windows-msvc/release/dbx.exe
+          @(
+            "### Windows (x64)",
+            "",
+            "| artifact | bytes | MiB |",
+            "|---|---|---|",
+            "| dbx.exe | $($bin.Length) | $([math]::Round($bin.Length/1MB,1)) |",
+            "| NSIS installer | $($exe.Length) | $([math]::Round($exe.Length/1MB,1)) |"
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-windows
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error

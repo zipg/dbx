@@ -58,4 +58,9 @@ panic = "abort"
 strip = true
 lto = true
 codegen-units = 1
-opt-level = "s"
+# "z" is the smallest stable codegen setting. DBX's hot paths are I/O bound,
+# so the runtime cost is small next to the installer-size win.
+opt-level = "z"
+overflow-checks = false
+debug = false
+incremental = false

@@ -13,6 +13,11 @@ ManifestDPIAwareness PerMonitorV2
 !else
   ; Set the compression algorithm. We default to LZMA.
   SetCompressor /SOLID "{{compression}}"
+  ; A 64 MiB dictionary shrinks the ~88 MiB payload by ~4%; 128 MiB buys
+  ; nothing further. Decompression needs about one dictionary in RAM.
+  !if "{{compression}}" == "lzma"
+    SetCompressorDictSize 64
+  !endif
 !endif
 
 !include MUI2.nsh

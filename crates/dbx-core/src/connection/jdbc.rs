@@ -460,20 +460,22 @@ fn jdbc_plugin_status_from_dir_local(plugin_dir: &Path) -> Result<JdbcPluginStat
 
 #[cfg(feature = "system-fonts")]
 pub fn list_system_fonts() -> Vec<String> {
-    let source = font_kit::source::SystemSource::new();
-    match source.all_families() {
-        Ok(families) => {
-            use std::collections::BTreeSet;
-            families
-                .into_iter()
-                .map(|family| family.trim().to_string())
-                .filter(|family| !family.is_empty())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect()
-        }
-        Err(_) => vec![],
-    }
+    use std::collections::BTreeSet;
+
+    // fontdb ships only the system font index instead of font-kit's full
+    // font-matching stack, which is everything this feature needs.
+    let mut database = fontdb::Database::new();
+    database.load_system_fonts();
+
+    database
+        .faces()
+        .flat_map(|face| face.families.iter().map(|(family, _language)| family.as_str()))
+        .map(str::trim)
+        .filter(|family| !family.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(not(feature = "system-fonts"))]
