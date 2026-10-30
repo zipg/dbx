@@ -8,10 +8,12 @@
 # (123 MB -> 100 MB) at the cost of a slower cold start.
 #
 # The AppDir is extracted with unsquashfs (no execution), so an arm64 image can
-# be repacked on an x64 runner. The AppImage runtime architecture is derived
-# from the bundled dbx ELF header and passed to appimagetool via ARCH.
+# be repacked on an x64 runner. The original runtime is reused via
+# --runtime-file, and appimagetool's own bundled mksquashfs (zstd-only) is
+# dropped so the distro mksquashfs with xz support is used.
 #
-# Requires: appimagetool on PATH (or APPIMAGETOOL=/path), unsquashfs, python3.
+# Requires: appimagetool (binary or .AppImage), unsquashfs, mksquashfs with xz,
+# python3.
 set -euo pipefail
 
 appimage=${1:?usage: repack-appimage.sh <path/to/*.AppImage>}
@@ -30,8 +32,7 @@ offset=$(python3 - "$appimage" <<'PY'
 import struct
 import sys
 
-path = sys.argv[1]
-data = open(path, "rb").read(8 * 1024 * 1024)
+data = open(sys.argv[1], "rb").read(8 * 1024 * 1024)
 pos = 0
 while True:
     idx = data.find(b"hsqs", pos)
@@ -46,9 +47,10 @@ while True:
 PY
 )
 
-unsquashfs -q -o "$offset" -d "$work/squashfs-root" "$appimage" >/dev/null
+unsquashfs -q -o "$offset" -d "$work/appdir" "$appimage" >/dev/null
+head -c "$offset" "$appimage" >"$work/runtime"
 
-runtime_arch=$(python3 - "$work/squashfs-root/usr/bin/dbx" <<'PY'
+runtime_arch=$(python3 - "$work/appdir/usr/bin/dbx" <<'PY'
 import struct
 import sys
 
@@ -61,16 +63,32 @@ print({0x3E: "x86_64", 0xB7: "aarch64"}.get(machine, "x86_64"))
 PY
 )
 
-output="$work/repacked.AppImage"
+tool_bin=$tool
+path_prefix=""
+if [[ "$tool" == *.AppImage && -f "$tool" ]]; then
+  # appimagetool ships its own zstd-only mksquashfs; extract the tool and drop
+  # that binary so PATH resolves the distro mksquashfs (which has xz).
+  mkdir -p "$work/tool"
+  (cd "$work/tool" && APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --appimage-extract >/dev/null)
+  rm -f "$work/tool/squashfs-root/usr/bin/mksquashfs"
+  tool_bin="$work/tool/squashfs-root/usr/bin/appimagetool"
+  path_prefix="$work/tool/squashfs-root/usr/bin:"
+fi
+
 mksquashfs_opts=(--mksquashfs-opt -b --mksquashfs-opt 1M)
 # BCJ is a per-architecture filter; only x86-64 payloads benefit.
 if [[ "$runtime_arch" == "x86_64" ]]; then
   mksquashfs_opts+=(--mksquashfs-opt -Xbcj --mksquashfs-opt x86)
 fi
-ARCH="$runtime_arch" APPIMAGE_EXTRACT_AND_RUN=1 "$tool" "$work/squashfs-root" "$output" \
+
+output="$work/repacked.AppImage"
+PATH="${path_prefix}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  ARCH="$runtime_arch" "$tool_bin" \
   --comp xz \
   "${mksquashfs_opts[@]}" \
-  --no-appstream >/dev/null
+  --runtime-file "$work/runtime" \
+  --no-appstream \
+  "$work/appdir" "$output" >/dev/null
 
 mv "$output" "$appimage"
 chmod +x "$appimage"

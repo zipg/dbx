@@ -360,10 +360,10 @@ jobs:
 
       - name: Download appimagetool
         run: |
-          curl -fsSL -o appimagetool \
+          curl -fsSL -o appimagetool.AppImage \
             "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
-          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
-          chmod +x appimagetool
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool.AppImage" | sha256sum -c -
+          chmod +x appimagetool.AppImage
 
       - name: Download Linux bundles
         run: |
@@ -374,7 +374,7 @@ jobs:
 
       - name: Repack AppImage and deb
         env:
-          APPIMAGETOOL: ${{ github.workspace }}/appimagetool
+          APPIMAGETOOL: ${{ github.workspace }}/appimagetool.AppImage
         run: |
           set -euo pipefail
           shopt -s nullglob

@@ -23,7 +23,7 @@ env:
 
 jobs:
   macos:
-    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'macos'
+    if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')) || inputs.target == 'all' || inputs.target == 'macos'
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
@@ -43,10 +43,27 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build macOS app and DMG
+      - name: Build macOS app
+        # Build the .app only and create the DMG with hdiutil: Tauri's
+        # bundle_dmg script drives Finder via AppleScript, which is fragile on
+        # headless runners.
         run: |
-          pnpm tauri build --target aarch64-apple-darwin --bundles dmg \
+          pnpm tauri build --target aarch64-apple-darwin --bundles app \
             --config src-tauri/tauri.size.conf.json
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          APP="target/aarch64-apple-darwin/release/bundle/macos/DBX.app"
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          DMG="target/aarch64-apple-darwin/release/bundle/dmg/DBX_${VERSION}_aarch64.dmg"
+          STAGE=$(mktemp -d)
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          mkdir -p "$(dirname "$DMG")"
+          hdiutil create -quiet -srcfolder "$STAGE" -format UDZO -imagekey zlib-level=9 \
+            -fs HFS+ -volname DBX "$DMG"
+          rm -rf "$STAGE"
 
       - name: Report sizes before conversion
         run: |
@@ -62,14 +79,14 @@ jobs:
             echo "| dbx binary | $(wc -c <"$APP/Contents/MacOS/dbx") | $(du -m "$APP/Contents/MacOS/dbx" | cut -f1) |"
             echo "| DBX.app | $(du -sk "$APP" | cut -f1 | awk '{print $1*1024}') | $(du -sm "$APP" | cut -f1) |"
             echo "| DMG (UDZO) | $(wc -c <"$DMG") | $(du -m "$DMG" | cut -f1) |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Convert DMG to ULMO
         run: |
           set -euo pipefail
           DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' ! -name '*-udzo.dmg' | head -1)
           ./scripts/shrink/convert-dmg-ulmo.sh "$DMG"
-          echo "| DMG (ULMO) | $(wc -c <"$DMG") | $(du -m "$DMG" | cut -f1) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| DMG (ULMO) | $(wc -c <"$DMG") | $(du -m "$DMG" | cut -f1) |" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -80,7 +97,7 @@ jobs:
           if-no-files-found: error
 
   linux:
-    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'linux'
+    if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')) || inputs.target == 'all' || inputs.target == 'linux'
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -108,10 +125,10 @@ jobs:
 
       - name: Download appimagetool
         run: |
-          curl -fsSL -o appimagetool \
+          curl -fsSL -o appimagetool.AppImage \
             "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
-          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
-          chmod +x appimagetool
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool.AppImage" | sha256sum -c -
+          chmod +x appimagetool.AppImage
 
       - name: Build Linux bundles
         run: pnpm tauri build --bundles appimage,deb --config src-tauri/tauri.size.conf.json
@@ -131,11 +148,11 @@ jobs:
             for f in originals/*; do
               echo "| $(basename "$f") | $(wc -c <"$f") | $(du -m "$f" | cut -f1) |"
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Repack AppImage and deb
         env:
-          APPIMAGETOOL: ${{ github.workspace }}/appimagetool
+          APPIMAGETOOL: ${{ github.workspace }}/appimagetool.AppImage
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -152,7 +169,7 @@ jobs:
             for f in target/release/bundle/appimage/*.AppImage target/release/bundle/deb/*.deb; do
               echo "| $(basename "$f") | $(wc -c <"$f") | $(du -m "$f" | cut -f1) |"
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -164,7 +181,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    if: github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'windows'
+    if: (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')) || inputs.target == 'all' || inputs.target == 'windows'
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
