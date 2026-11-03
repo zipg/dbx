@@ -1,0 +1,42 @@
+{
+  "date": "2026-11-03",
+  "base_commit": "63019b2574bcb24357b59409cec39cf249abf577",
+  "component_sha256": "264bc60da86ea11f885346ba6fc4a947676fe989bc3c3d5c1e98c01ea1a7ab68",
+  "builtin_profiles": 110,
+  "jdbc_products": 1,
+  "additional_modes": 5,
+  "plugin_cases": 3,
+  "total_configurations": 119,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "viewport_widths": [
+    1280,
+    640,
+    400
+  ],
+  "viewport_cases": 714,
+  "passed_cases": 714,
+  "failed_cases": 0,
+  "tests": {
+    "files": 19,
+    "tests": 172,
+    "passed": true
+  },
+  "typecheck": "passed",
+  "format": "passed",
+  "lint": "passed",
+  "scope": "Mounted production ConnectionDialog, Advanced tab. Discovery APIs use local fixture data; no live database connections. Plugin cases use the repository Hello provider and two schema variants.",
+  "all_configuration_tabs_uniform_660": true,
+  "default_timeout_layout": "inline in both zh-CN and en",
+  "legacy_css_sha256": "0835226183d2896cab94c47307713b8a023e1094ed67aca63002334b0e5bbf4b",
+  "extra_state_cases": 32,
+  "narrow_tab_states": 238,
+  "max_config_horizontal_scroll_px": 0,
+  "field_alignment_checks": 2130,
+  "max_label_center_delta_px": 0,
+  "max_nacos_right_gap_px": 0,
+  "etcd_grouping_passed": true,
+  "submitted_code_commit": "9d45b15ed6b07acd87f927bd71e4deb3568604f2"
+}
